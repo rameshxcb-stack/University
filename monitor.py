@@ -121,7 +121,10 @@ ETAG_CHECK_MAX_AGE_DAYS = int(os.getenv("ETAG_CHECK_MAX_AGE_DAYS", "14"))
 
 USER_AGENT = os.getenv(
     "MONITOR_USER_AGENT",
-    "Mozilla/5.0 (compatible; JharkhandUniversityMonitor/11.0)"
+    # Use a conventional browser UA for sites that reject clearly identified bots.
+    # The monitor still respects robots.txt and does not attempt authentication bypass.
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
 JS_RENDER_USER_AGENT = os.getenv(
@@ -973,9 +976,9 @@ def add_review_item(state, record, reason, details=None):
     }
 
 
-def _check_url_changed(session, url, record):
+def _check_url_changed(session, url, record, verify_ssl=True):
     try:
-        head = session.head(url, timeout=8, allow_redirects=True)
+        head = session.head(url, timeout=8, allow_redirects=True, verify=verify_ssl)
         new_etag = head.headers.get("etag")
         new_lm = head.headers.get("last-modified")
         old_etag = record.get("etag")
@@ -987,7 +990,7 @@ def _check_url_changed(session, url, record):
             changed = True
         if record.get("is_pdf"):
             try:
-                with session.get(url, timeout=20, allow_redirects=True, stream=True) as response:
+                with session.get(url, timeout=20, allow_redirects=True, stream=True, verify=verify_ssl) as response:
                     if response.status_code < 400:
                         chunks = []
                         total = 0
@@ -1427,7 +1430,7 @@ def _find_pdf_link_in_html(html_text, base_url):
     return ranked[0][0] if ranked else None
 
 
-def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None):
+def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None, verify_ssl=True):
     if _visited is None:
         _visited = set()
     canon = canonical_url(url)
@@ -1437,7 +1440,7 @@ def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None)
     if depth > 3:
         return None, url, "max_depth_exceeded"
     try:
-        head = session.head(url, timeout=min(10, timeout), allow_redirects=True)
+        head = session.head(url, timeout=min(10, timeout), allow_redirects=True, verify=verify_ssl)
         cl = head.headers.get("content-length")
         if cl:
             try:
@@ -1448,7 +1451,7 @@ def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None)
     except Exception:
         pass
     try:
-        response = session.get(url, timeout=timeout, allow_redirects=True)
+        response = session.get(url, timeout=timeout, allow_redirects=True, verify=verify_ssl)
     except requests.RequestException as exc:
         return None, url, f"request_error:{type(exc).__name__}"
     if response.status_code >= 400:
@@ -1475,7 +1478,7 @@ def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None)
                 )
         for cand_url, priority in candidates:
             sub_content, sub_url, sub_method = _download_with_pdf_resolution(
-                session, cand_url, timeout, depth + 1, _visited
+                session, cand_url, timeout, depth + 1, _visited, verify_ssl
             )
             if sub_content:
                 return sub_content, sub_url, f"html_wrap(p{priority})->{sub_method}"
@@ -1776,8 +1779,8 @@ def is_pdf(url):
 def make_session():
     session = requests.Session()
     retry = Retry(
-        total=3, connect=3, read=3, status=3,
-        backoff_factor=0.7,
+        total=2, connect=2, read=2, status=2,
+        backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET", "HEAD"}),
         respect_retry_after_header=True,
@@ -1799,13 +1802,16 @@ def make_session():
 # Config
 # ---------------------------------------------------------------------------
 
+_SITE_VERIFY_SSL_BY_ID = {}
+
+
 def get_config():
     cfg = load_json(CONFIG_FILE, {})
     if not isinstance(cfg, dict):
         raise RuntimeError("websites.json root must be an object")
     scan = cfg.get("scan") or {}
     defaults = {
-        "request_timeout_seconds": 30,
+        "request_timeout_seconds": 45,
         "max_workers": 6,
         "max_items_per_site": 100,
         "max_discovery_pages_per_site": 15,
@@ -1818,7 +1824,7 @@ def get_config():
         "sent_retention_days": 90,
         "ignored_retention_days": 30,
         "baseline_retention_days": 60,
-        "domain_delay_seconds": 1.0,
+        "domain_delay_seconds": 0.4,
         "max_state_items": 3000,
         "max_state_bytes": 3000000,
         "max_pending_attempts": 500,
@@ -1903,6 +1909,8 @@ def get_config():
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
         enabled.append(site)
     cfg["websites"] = enabled
+    global _SITE_VERIFY_SSL_BY_ID
+    _SITE_VERIFY_SSL_BY_ID = {site["id"]: bool(site.get("verify_ssl", True)) for site in enabled}
     return cfg
 
 
@@ -2451,13 +2459,89 @@ def discover_site(session, site, scan):
             domain_delay = float(scan.get("domain_delay_seconds", 1.0) or 0.0)
             if domain_delay > 0 and visited:
                 time.sleep(min(domain_delay, 10.0))
-            response = session.get(page, timeout=timeout, allow_redirects=True)
-            if response.status_code >= 400:
-                raise RuntimeError(f"HTTP {response.status_code}")
-            final_url = canonical_url(response.url)
-            content_type = response.headers.get("content-type", "").lower()
+            # SSL verification remains enabled by default. A site may opt in to
+            # verify_ssl=false in websites.json only after its certificate issue is confirmed.
+            verify_ssl = bool(site.get("verify_ssl", True))
+            if not verify_ssl:
+                print(f"[WARN] TLS certificate verification disabled for configured site: {page}", file=sys.stderr)
 
-            if _looks_like_pdf_response(response.content, content_type, final_url):
+            response = None
+            response_text = None
+            rendered_from_waf = False
+            final_url = page
+            content_type = ""
+            try:
+                response = session.get(
+                    page, timeout=timeout, allow_redirects=True, verify=verify_ssl
+                )
+                final_url = canonical_url(response.url)
+                content_type = response.headers.get("content-type", "").lower()
+            except requests.RequestException as request_exc:
+                # Requests may fail before HTML is available (TLS, timeout, connection reset).
+                # Try the configured browser renderer once; this cannot fix DNS/domain failures,
+                # but it can recover some TLS and browser-only navigation cases.
+                can_browser_retry = (
+                    site.get("js_render", "auto") != "never"
+                    and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE
+                    and js_render_count < JS_MAX_RENDER_PER_SITE
+                )
+                if can_browser_retry:
+                    print(
+                        f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}",
+                        file=sys.stderr,
+                    )
+                    rendered_html, rendered_url, js_method = _render_with_playwright(
+                        page,
+                        timeout_ms=timeout * 1000,
+                        wait_for_selector=site.get("js_wait_for_selector"),
+                        wait_after_ms=site.get("js_wait_after_ms"),
+                        scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                    )
+                    js_render_count += 1
+                    if rendered_html:
+                        response_text = rendered_html
+                        final_url = _canonical_spa_url(rendered_url or page)
+                        content_type = "text/html"
+                        rendered_from_waf = True
+                        print(
+                            f"[NETWORK-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[NETWORK-RETRY-FAIL] {page[:80]}: {type(request_exc).__name__}; {js_method}",
+                            file=sys.stderr,
+                        )
+                if response_text is None:
+                    raise request_exc
+
+            if response is not None and response.status_code in (403, 503):
+                # Some sites return a WAF/interstitial response to requests. Try the
+                # normal Playwright renderer once, without treating this as guaranteed bypass.
+                if JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE:
+                    print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
+                    rendered_html, rendered_url, js_method = _render_with_playwright(
+                        page,
+                        timeout_ms=timeout * 1000,
+                        wait_for_selector=site.get("js_wait_for_selector"),
+                        wait_after_ms=site.get("js_wait_after_ms"),
+                        scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                    )
+                    js_render_count += 1
+                    if rendered_html:
+                        response_text = rendered_html
+                        final_url = _canonical_spa_url(rendered_url)
+                        content_type = "text/html"
+                        rendered_from_waf = True
+                        print(f"[WAF-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)", file=sys.stderr)
+                    else:
+                        print(f"[WAF-RETRY-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
+                if response_text is None:
+                    raise RuntimeError(f"HTTP {response.status_code}; Playwright fallback unavailable or failed")
+            elif response is not None and response.status_code >= 400:
+                raise RuntimeError(f"HTTP {response.status_code}")
+
+            if response is not None and not rendered_from_waf and _looks_like_pdf_response(response.content, content_type, final_url):
                 filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
                 candidates[final_url] = {
                     "url": final_url, "title": clean_text(filename, 300),
@@ -2467,11 +2551,13 @@ def discover_site(session, site, scan):
                 successful_pages += 1
                 continue
 
-            if content_type and "html" not in content_type and "xhtml" not in content_type:
+            if response is not None and not rendered_from_waf and content_type and "html" not in content_type and "xhtml" not in content_type:
+                print(f"[SKIP] Non-HTML content-type={content_type[:60]!r} at {page}", file=sys.stderr)
                 continue
 
             js_mode = site.get("js_render", "auto")
-            should_render_js = _should_render_js(site, response.text, page)
+            source_html = response.text if response is not None else (response_text or "")
+            should_render_js = False if rendered_from_waf else _should_render_js(site, source_html, page)
 
             if (should_render_js and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE
                     and js_render_count < JS_MAX_RENDER_PER_SITE):
@@ -2491,8 +2577,8 @@ def discover_site(session, site, scan):
                 else:
                     response_text = response.text
                     print(f"[JS-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
-            else:
-                response_text = response.text
+            elif response_text is None:
+                response_text = response.text if response is not None else ""
 
             if _is_empty_page_text(response_text):
                 successful_pages += 1
@@ -2817,14 +2903,14 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
     return better_title, summary
 
 
-def download_pdf_content(pdf_url, timeout=30):
+def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
     global _RUNTIME_PDF_CACHE
     if pdf_url in _RUNTIME_PDF_CACHE:
         content = _RUNTIME_PDF_CACHE[pdf_url]
     else:
         try:
             session = make_session()
-            content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, timeout)
+            content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, timeout, verify_ssl=verify_ssl)
             if not content:
                 return None, "", False, method, ""
             if len(content) > MAX_PDF_SEND_BYTES:
@@ -3486,7 +3572,7 @@ def send_notification_with_pdf(token, chat_id, record, full_message):
     if pdf_bytes is None:
         try:
             session = make_session()
-            content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, 30)
+            content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, 30, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
             if content and len(content) <= MAX_PDF_SEND_BYTES:
                 pdf_bytes = content
                 _cache_put(pdf_url, content)
@@ -4462,7 +4548,48 @@ def _run_config_self_tests():
             print("[TEST-FAIL ] Config has no enabled sites", file=sys.stderr)
             failures += 1
 
+        scan = cfg.get("scan", {})
+        scan_checks = [
+            ("request_timeout_seconds", 45),
+            ("domain_delay_seconds", 0.4),
+        ]
+        for key, expected in scan_checks:
+            got = scan.get(key)
+            if got == expected:
+                print(f"[TEST-PASS ] Scan config {key}", file=sys.stderr)
+            else:
+                print(f"[TEST-FAIL ] Scan config {key}: got={got!r}, expected={expected!r}", file=sys.stderr)
+                failures += 1
+
+        broad_discovery = {"pdf", "download"}.intersection(set(scan.get("discovery_keywords", [])))
+        if not broad_discovery:
+            print("[TEST-PASS ] Broad discovery keywords excluded", file=sys.stderr)
+        else:
+            print(f"[TEST-FAIL ] Broad discovery keywords still present: {sorted(broad_discovery)}", file=sys.stderr)
+            failures += 1
+
+        if "iimranchi" not in sites and "iiimranchi" in sites:
+            print("[TEST-PASS ] Legacy IIM site ID preserved for state compatibility", file=sys.stderr)
+        elif "iimranchi" in sites:
+            print("[TEST-PASS ] IIM site ID uses canonical spelling", file=sys.stderr)
+        else:
+            print("[TEST-FAIL ] IIM Ranchi site ID missing", file=sys.stderr)
+            failures += 1
+
+        expected_urls = {
+            "kolhan-university": "https://www.kolhanuniversity.ac.in/",
+            "bau-ranchi": "https://bauranchi.org/",
+        }
+        for site_id, expected_url in expected_urls.items():
+            got_url = sites.get(site_id, {}).get("url")
+            if got_url == expected_url:
+                print(f"[TEST-PASS ] Official base URL {site_id}", file=sys.stderr)
+            else:
+                print(f"[TEST-FAIL ] Base URL {site_id}: got={got_url!r}, expected={expected_url!r}", file=sys.stderr)
+                failures += 1
+
         checks = [
+            ("vbu-hazaribagh", "js_render", "always"),
             ("vbu-hazaribagh", "js_wait_after_ms", 4500),
             ("vbu-hazaribagh", "js_scroll_bottom", True),
             ("vbu-hazaribagh", "js_wait_for_selector", "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table"),
@@ -4479,7 +4606,8 @@ def _run_config_self_tests():
     except Exception as exc:
         print(f"[TEST-FAIL ] Config self-test raised {type(exc).__name__}: {exc}", file=sys.stderr)
         failures += 1
-    print(f"[TEST] Config: {5 - failures}/5 passed, {failures} failed.", file=sys.stderr)
+    total_checks = 12  # site presence, two scan settings, discovery/ID checks, two official URLs, five per-site settings
+    print(f"[TEST] Config: {total_checks - failures}/{total_checks} passed, {failures} failed.", file=sys.stderr)
     return failures
 
 
@@ -4655,7 +4783,7 @@ def _fetch_pdfs_for_batch(batch, scan):
 
     def _fetch_one(record):
         try:
-            return download_pdf_content(record["url"], timeout)
+            return download_pdf_content(record["url"], timeout, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
         except Exception as exc:
             print(f"[WARN] PDF fetch error: {exc}", file=sys.stderr)
             return None, "", False, "error", ""
@@ -4846,6 +4974,10 @@ def main():
                     state["metrics"]["site_scan_failure"][sid] = state["metrics"]["site_scan_failure"].get(sid, 0) + 1
                     mark_site_failure(state, sid, "; ".join(errors) or "No page could be fetched")
                     print(f"[ERROR] {site['name']}: no page could be fetched", file=sys.stderr)
+                    for err in errors[:5]:
+                        print(f"    ↳ {clean_text(str(err), 400)}", file=sys.stderr)
+                    if len(errors) > 5:
+                        print(f"    ↳ ... and {len(errors) - 5} more error(s)", file=sys.stderr)
             except Exception as exc:
                 run_errors += 1
                 state["metrics"]["site_scan_failure"][site["id"]] = state["metrics"]["site_scan_failure"].get(site["id"], 0) + 1
@@ -5065,7 +5197,7 @@ def main():
                     if should_check:
                         try:
                             session = make_session()
-                            changed, new_etag, new_lm = _check_url_changed(session, candidate["url"], record)
+                            changed, new_etag, new_lm = _check_url_changed(session, candidate["url"], record, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
                             if changed:
                                 print(f"[UPDATE] Content changed: {candidate['url'][:80]}", file=sys.stderr)
                                 record["status"] = "pending"
