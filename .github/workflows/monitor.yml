@@ -2,7 +2,7 @@ name: Jharkhand University Notification Monitor
 
 on:
   schedule:
-    - cron: "0 */4 * * *"     # Every 4 hours
+    - cron: "0 */4 * * *"        # हर 4 घंटे (universities slow हैं)
   workflow_dispatch:
 
 permissions:
@@ -15,19 +15,21 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 90          # 60 → 90 (Playwright slow है)
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install system deps
+      - name: Install system deps (Tesseract + Poppler)
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-hin poppler-utils
@@ -37,19 +39,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ⬇️ NEW: Playwright Chromium (required for VBU/AISECT/Angular sites)
       - name: Install Playwright Chromium
         run: |
           python -m playwright install --with-deps chromium
+
+      # Optional: quick sanity-check that Playwright actually works
+      - name: Verify Playwright
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=["--no-sandbox"])
+              b.close()
+          print("Playwright OK")
+          PY
 
       - name: Run notification monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          JS_RENDER_ENABLED: "true"
-          SEND_PDF_ENABLED: "true"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NOTIFY_LANGUAGE: "both"
-        run: python monitor.py
+          # OCR
+          OCR_ENABLED: "true"
+          OCR_LANG: "eng+hin"
+          OCR_DPI: "200"
+          OCR_MAX_WORKERS: "1"
+          SEND_PDF_ENABLED: "true"
+          GEMINI_MAX_OUTPUT_TOKENS: "16384"
+          GEMINI_PDF_OCR_ENABLED: "true"
+          # JavaScript rendering
+          JS_RENDER_ENABLED: "true"
+          JS_RENDER_TIMEOUT_MS: "30000"
+          JS_WAIT_AFTER_MS: "2500"
+          JS_SCROLL_TO_BOTTOM: "false"
+          JS_MAX_RENDER_PER_SITE: "40"
+        run: |
+          python monitor.py
 
       - name: Commit state
         if: always()
@@ -57,15 +85,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || git commit -m "chore: update notification state"
+          git diff --cached --quiet || \
+            git commit -m "chore: update notification state"
 
-      - name: Push state
+      - name: Rebase and push state
         if: always()
         run: |
           for i in 1 2 3 4 5; do
             git fetch origin "${GITHUB_REF_NAME}" && \
               git rebase "origin/${GITHUB_REF_NAME}" && \
               git push origin "HEAD:${GITHUB_REF_NAME}" && break
-            echo "Push attempt $i failed, retrying..."
+            echo "Push attempt $i failed, retrying in 5s..."
             sleep 5
           done
