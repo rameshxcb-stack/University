@@ -1,0 +1,234 @@
+{
+  "version": 31,
+  "initialized": true,
+  "last_run": "2026-10-21T17:33:10.000000+00:00",
+  "category": "jharkhand-university",
+  "scan": {
+    "request_timeout_seconds": 30,
+    "max_workers": 5,
+    "max_items_per_site": 100,
+    "max_discovery_pages_per_site": 15,
+    "max_archive_pages_per_site": 20,
+    "max_pagination_per_archive": 4,
+    "max_new_items_per_run": 30,
+    "gemini_batch_size": 3,
+    "gemini_max_calls_per_run": 20,
+    "retention_days": 90,
+    "sent_retention_days": 90,
+    "ignored_retention_days": 30,
+    "baseline_retention_days": 60,
+    "max_pending_attempts": 500,
+    "stale_notice_days": 10,
+    "site_alert_threshold": 3,
+    "site_alert_cooldown_hours": 6,
+    "sitemap_enabled": true,
+    "domain_delay_seconds": 1.2,
+    "max_state_items": 3000,
+    "max_state_bytes": 3000000,
+    "keywords": [
+      "admission", "result", "admit card", "answer key", "examination",
+      "exam", "semester", "revaluation", "migration", "certificate",
+      "scholarship", "fee", "syllabus", "timetable", "counselling",
+      "recruitment", "vacancy", "tender", "notice", "notification",
+      "placement", "hostel", "convocation", "registration", "enrollment",
+      "e-kalyan", "phd", "research",
+      "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
+      "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र",
+      "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग",
+      "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास",
+      "दीक्षांत समारोह", "पंजीकरण", "नामांकन"
+    ],
+    "discovery_keywords": [
+      "notice", "notification", "recruitment", "result", "admit", "exam",
+      "admission", "tender", "download", "pdf", "circular", "announcement",
+      "syllabus", "timetable", "revaluation", "migration", "scholarship",
+      "registration", "hostel", "convocation", "placement", "e-kalyan",
+      "सूचना", "भर्ती", "परिणाम", "नोटिस", "विज्ञापन", "अधिसूचना",
+      "प्रवेश", "परीक्षा", "छात्रवृत्ति", "पाठ्यक्रम"
+    ]
+  },
+  "websites": [
+    {
+      "id": "vbu-hazaribagh",
+      "name": "Vinoba Bhave University, Hazaribagh",
+      "url": "https://vbu.ac.in/",
+      "enabled": true,
+      "js_render": "always",
+      "js_wait_after_ms": 4500,
+      "js_wait_for_selector": "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table",
+      "js_scroll_bottom": true,
+      "keywords": ["notice", "exam", "result", "admission", "syllabus", "timetable", "revaluation"],
+      "discovery_keywords": ["notice", "exam", "result", "admission", "syllabus", "revaluation", "migration"]
+    },
+    {
+      "id": "ranchi-university",
+      "name": "Ranchi University",
+      "url": "https://ranchiuniversity.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "npu-daltonganj",
+      "name": "Nilamber-Pitamber University, Palamu",
+      "url": "https://npu.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "kolhan-university",
+      "name": "Kolhan University, Chaibasa",
+      "url": "https://kolhanuniversity.ac.in/",
+      "enabled": true,
+      "js_render": "auto",
+      "js_wait_after_ms": 3000
+    },
+    {
+      "id": "skmu-dumka",
+      "name": "Sido Kanhu Murmu University, Dumka",
+      "url": "https://skmu.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "dspmu-ranchi",
+      "name": "Dr. Shyama Prasad Mukherjee University, Ranchi",
+      "url": "https://dspmuranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bbmku-dhanbad",
+      "name": "Binod Bihari Mahto Koylanchal University, Dhanbad",
+      "url": "https://bbmku.ac.in/",
+      "enabled": true,
+      "js_render": "auto",
+      "js_wait_after_ms": 3500
+    },
+    {
+      "id": "jwu-jamshedpur",
+      "name": "Jamshedpur Women's University",
+      "url": "https://jwu.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bmtu-khunti",
+      "name": "Birsa Munda Tribal University, Khunti",
+      "url": "https://bmtu.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "jut-ranchi",
+      "name": "Jharkhand University of Technology, Ranchi",
+      "url": "https://jutranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bau-ranchi",
+      "name": "Birsa Agricultural University, Ranchi",
+      "url": "https://bauranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "nusrl-ranchi",
+      "name": "National University of Study & Research in Law, Ranchi",
+      "url": "https://nusrlranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "cuj-ranchi",
+      "name": "Central University of Jharkhand",
+      "url": "https://cuj.ac.in/",
+      "enabled": true,
+      "js_render": "always",
+      "js_wait_after_ms": 3500,
+      "js_wait_for_selector": "table, .notice, .news"
+    },
+    {
+      "id": "iitism-dhanbad",
+      "name": "IIT (ISM) Dhanbad",
+      "url": "https://www.iitism.ac.in/",
+      "enabled": true,
+      "js_render": "always",
+      "js_wait_after_ms": 3000
+    },
+    {
+      "id": "nitjsr",
+      "name": "NIT Jamshedpur",
+      "url": "https://nitjsr.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "iimranchi",
+      "name": "IIM Ranchi",
+      "url": "https://www.iimranchi.ac.in/",
+      "enabled": true,
+      "js_render": "always",
+      "js_wait_after_ms": 3000
+    },
+    {
+      "id": "iiitranchi",
+      "name": "IIIT Ranchi",
+      "url": "https://iiitranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bitmesra",
+      "name": "BIT Mesra, Ranchi",
+      "url": "https://www.bitmesra.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bitsindri",
+      "name": "BIT Sindri, Dhanbad",
+      "url": "https://bitsindri.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "xlri-jamshedpur",
+      "name": "XLRI Jamshedpur",
+      "url": "https://xlri.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "rims-ranchi",
+      "name": "Rajendra Institute of Medical Sciences, Ranchi",
+      "url": "https://rimsranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "arka-jain-university",
+      "name": "Arka Jain University, Jamshedpur",
+      "url": "https://arkajainuniversity.ac.in/",
+      "enabled": true,
+      "js_render": "auto",
+      "js_wait_after_ms": 2500
+    },
+    {
+      "id": "capital-university",
+      "name": "Capital University, Koderma",
+      "url": "https://capitaluniversity.edu.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "aisect-university",
+      "name": "AISECT University, Hazaribagh",
+      "url": "https://aisectuniversity.ac.in/",
+      "enabled": true,
+      "js_render": "auto",
+      "js_wait_after_ms": 2500
+    }
+  ],
+  "items": {}
+}
