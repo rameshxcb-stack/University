@@ -1,7 +1,6 @@
 {
-  "category": "jharkhand-university",
   "scan": {
-    "request_timeout_seconds": 30,
+    "request_timeout_seconds": 45,
     "max_workers": 5,
     "max_items_per_site": 100,
     "max_discovery_pages_per_site": 15,
@@ -14,35 +13,96 @@
     "sent_retention_days": 90,
     "ignored_retention_days": 30,
     "baseline_retention_days": 60,
+    "domain_delay_seconds": 0.4,
+    "max_state_items": 3000,
+    "max_state_bytes": 3000000,
     "max_pending_attempts": 500,
     "stale_notice_days": 10,
     "site_alert_threshold": 3,
     "site_alert_cooldown_hours": 6,
-    "sitemap_enabled": true,
-    "domain_delay_seconds": 1.2,
-    "max_state_items": 3000,
-    "max_state_bytes": 3000000,
     "keywords": [
-      "admission", "result", "admit card", "answer key", "examination",
-      "exam", "semester", "revaluation", "migration", "certificate",
-      "scholarship", "fee", "syllabus", "timetable", "counselling",
-      "recruitment", "vacancy", "tender", "notice", "notification",
-      "placement", "hostel", "convocation", "registration", "enrollment",
-      "e-kalyan", "phd", "research",
-      "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
-      "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र",
-      "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग",
-      "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास",
-      "दीक्षांत समारोह", "पंजीकरण", "नामांकन"
+      "admission",
+      "result",
+      "admit card",
+      "answer key",
+      "examination",
+      "exam",
+      "semester",
+      "revaluation",
+      "migration",
+      "certificate",
+      "scholarship",
+      "fee",
+      "syllabus",
+      "timetable",
+      "counselling",
+      "recruitment",
+      "vacancy",
+      "tender",
+      "notice",
+      "notification",
+      "placement",
+      "hostel",
+      "convocation",
+      "registration",
+      "enrollment",
+      "e-kalyan",
+      "phd",
+      "research",
+      "प्रवेश",
+      "परिणाम",
+      "प्रवेश पत्र",
+      "उत्तर कुंजी",
+      "परीक्षा",
+      "सेमेस्टर",
+      "पुनर्मूल्यांकन",
+      "माइग्रेशन",
+      "प्रमाण पत्र",
+      "छात्रवृत्ति",
+      "शुल्क",
+      "पाठ्यक्रम",
+      "समय सारिणी",
+      "काउंसलिंग",
+      "भर्ती",
+      "निविदा",
+      "सूचना",
+      "अधिसूचना",
+      "प्लेसमेंट",
+      "छात्रावास"
     ],
     "discovery_keywords": [
-      "notice", "notification", "recruitment", "result", "admit", "exam",
-      "admission", "tender", "download", "pdf", "circular", "announcement",
-      "syllabus", "timetable", "revaluation", "migration", "scholarship",
-      "registration", "hostel", "convocation", "placement", "e-kalyan",
-      "सूचना", "भर्ती", "परिणाम", "नोटिस", "विज्ञापन", "अधिसूचना",
-      "प्रवेश", "परीक्षा", "छात्रवृत्ति", "पाठ्यक्रम"
-    ]
+      "notice",
+      "notification",
+      "recruitment",
+      "result",
+      "admit",
+      "exam",
+      "admission",
+      "tender",
+      "circular",
+      "announcement",
+      "syllabus",
+      "timetable",
+      "revaluation",
+      "migration",
+      "scholarship",
+      "registration",
+      "hostel",
+      "convocation",
+      "placement",
+      "e-kalyan",
+      "सूचना",
+      "भर्ती",
+      "परिणाम",
+      "नोटिस",
+      "विज्ञापन",
+      "अधिसूचना",
+      "प्रवेश",
+      "परीक्षा",
+      "छात्रवृत्ति",
+      "पाठ्यक्रम"
+    ],
+    "sitemap_enabled": true
   },
   "websites": [
     {
@@ -54,15 +114,38 @@
       "js_wait_after_ms": 4500,
       "js_wait_for_selector": "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table",
       "js_scroll_bottom": true,
-      "keywords": ["notice", "exam", "result", "admission", "syllabus", "timetable", "revaluation"],
-      "discovery_keywords": ["notice", "exam", "result", "admission", "syllabus", "revaluation", "migration"]
+      "keywords": [
+        "notice",
+        "exam",
+        "result",
+        "admission",
+        "syllabus",
+        "timetable",
+        "revaluation"
+      ],
+      "discovery_keywords": [
+        "notice",
+        "exam",
+        "result",
+        "admission",
+        "syllabus",
+        "revaluation",
+        "migration"
+      ]
     },
     {
       "id": "ranchi-university",
       "name": "Ranchi University",
       "url": "https://ranchiuniversity.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "keywords": [
+        "recruitment",
+        "notice",
+        "admission",
+        "exam",
+        "result"
+      ]
     },
     {
       "id": "npu-daltonganj",
@@ -74,7 +157,7 @@
     {
       "id": "kolhan-university",
       "name": "Kolhan University, Chaibasa",
-      "url": "https://kolhanuniversity.ac.in/",
+      "url": "https://www.kolhanuniversity.ac.in/",
       "enabled": true,
       "js_render": "auto",
       "js_wait_after_ms": 3000
@@ -123,20 +206,6 @@
       "js_render": "auto"
     },
     {
-      "id": "bau-ranchi",
-      "name": "Birsa Agricultural University, Ranchi",
-      "url": "https://bauranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "nusrl-ranchi",
-      "name": "National University of Study & Research in Law, Ranchi",
-      "url": "https://nusrlranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
       "id": "cuj-ranchi",
       "name": "Central University of Jharkhand",
       "url": "https://cuj.ac.in/",
@@ -161,7 +230,7 @@
       "js_render": "auto"
     },
     {
-      "id": "iimranchi",
+      "id": "iiimranchi",
       "name": "IIM Ranchi",
       "url": "https://www.iimranchi.ac.in/",
       "enabled": true,
@@ -200,6 +269,20 @@
       "id": "rims-ranchi",
       "name": "Rajendra Institute of Medical Sciences, Ranchi",
       "url": "https://rimsranchi.ac.in/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "bau-ranchi",
+      "name": "Birsa Agricultural University, Ranchi",
+      "url": "https://bauranchi.org/",
+      "enabled": true,
+      "js_render": "auto"
+    },
+    {
+      "id": "nusrl-ranchi",
+      "name": "National University of Study & Research in Law, Ranchi",
+      "url": "https://nusrlranchi.ac.in/",
       "enabled": true,
       "js_render": "auto"
     },
