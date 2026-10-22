@@ -927,6 +927,17 @@ def meaningful_change_details(old_text, new_text):
 
 
 def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
+    # Identical titles are common when the same notice is linked from several
+    # cards/pages. Ignore surrounding-page churn unless an extracted meaningful
+    # field (date, deadline, vacancy, eligibility, etc.) actually changed.
+    old_title_norm = re.sub(r"\s+", " ", (old_title or "").casefold()).strip()
+    new_title_norm = re.sub(r"\s+", " ", (new_title or "").casefold()).strip()
+    if old_title_norm and old_title_norm == new_title_norm:
+        old_fields = extract_meaningful_fields("\n".join([old_title or "", old_context or ""]))
+        new_fields = extract_meaningful_fields("\n".join([new_title or "", new_context or ""]))
+        return any(old_fields.get(k) != new_fields.get(k)
+                   for k in set(old_fields) | set(new_fields))
+
     details = meaningful_change_details(
         "\n".join([old_title or "", old_context or ""]),
         "\n".join([new_title or "", new_context or ""])
@@ -951,7 +962,17 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
 
 
 def baseline_can_complete(scan_success, errors):
-    return bool(scan_success) and not bool(errors)
+    # A few broken pagination/detail links should not hold a site's baseline
+    # open forever when its main pages were fetched successfully. A fully
+    # failed scan still cannot establish a baseline.
+    if isinstance(errors, str):
+        error_count = 1 if errors.strip() else 0
+    else:
+        try:
+            error_count = len(errors or [])
+        except TypeError:
+            error_count = 1 if errors else 0
+    return bool(scan_success) and error_count <= 3
 
 
 def add_review_item(state, record, reason, details=None):
@@ -1074,6 +1095,9 @@ _GENERIC_TITLES = {
     "»", "«", ">>", "<<", "next", "previous", "prev",
     "back", "forward", "home", "contact", "about",
     "about us", "contact us", "read more", "view more",
+    "view all", "show more", "see more", "load more", "learn more",
+    "continue reading", "read more chevron_right", "view all chevron_right",
+    "chevron_right", "chevron_left", "arrow_forward", "arrow_back",
     "click here", "here", "link",
 }
 
@@ -1203,10 +1227,22 @@ def _is_archive_url(url):
 
 
 def _is_generic_title(title):
-    t = (title or "").strip().lower()
+    t = re.sub(r"\s+", " ", (title or "").strip().casefold())
     if not t:
         return True
     if t in _GENERIC_TITLES:
+        return True
+    # Material/Angular UI labels often append icon ligatures to visible text.
+    ui_only = re.sub(
+        r"\s+(?:chevron_(?:right|left|up|down)|arrow_(?:forward|back|right|left)|"
+        r"keyboard_arrow_(?:right|left|up|down)|east|west|north|south)+$", "", t
+    ).strip()
+    if ui_only in _GENERIC_TITLES:
+        return True
+    if re.match(
+        r"^(?:read|view|show|see|load|continue|learn)\s+(?:more|all|less|next)"
+        r"(?:\s+(?:chevron_\w+|arrow_\w+|east|west|north|south))*$", t
+    ):
         return True
     compact = re.sub(r"[^\w]+", "", t, flags=re.UNICODE)
     if not compact or len(compact) <= 2:
@@ -1636,11 +1672,34 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
 
     title_years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_title)]
     current_year = now.year
+    current_academic_start = current_year if now.month >= 7 else current_year - 1
     current_year_update = bool(re.search(
         rf"(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र).{{0,50}}{current_year}|"
         rf"{current_year}.{{0,50}}(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र)",
         f"{normalized_title} {normalized_context}", re.I
     ))
+    # Old admission/session lists should not be resurrected just because a
+    # two-digit academic range ends in the current calendar year (e.g. 2025-26
+    # while the 2026-27 academic session is underway). Do not apply this rule
+    # to all results: a result can legitimately be published after an exam year.
+    session_pattern = re.compile(
+        r"(?<!\d)((?:19|20)\d{2})\s*[-/–—]\s*((?:19|20)\d{2}|\d{2})(?!\d)"
+    )
+    admission_session_signal = bool(re.search(
+        r"\b(?:admission|admissions|provisional|application|counselling|counseling|"
+        r"selection\s+list|merit\s+list|ph\.?d\.?|enrollment|enrolment|प्रवेश|आवेदन|"
+        r"चयन\s+सूची|मेरिट\s+सूची)\b", normalized_title, re.I
+    ))
+    if admission_session_signal and not current_year_update:
+        for match in session_pattern.finditer(normalized_title):
+            session_start = int(match.group(1))
+            end_token = match.group(2)
+            session_end = int(end_token) if len(end_token) == 4 else (session_start // 100) * 100 + int(end_token)
+            if session_end < session_start:
+                session_end += 100
+            if session_start < current_academic_start:
+                return True
+
     title_has_old_range = len(title_years) >= 2 and max(title_years) < current_year
     title_has_very_old_year = bool(title_years) and max(title_years) < current_year - 1
     if (title_has_old_range or title_has_very_old_year) and not current_year_update:
@@ -2120,7 +2179,18 @@ _PRECLASS_NAV_ONLY = (
 
 
 def _keyword_pre_classify(record):
+    # Never fast-track a notice before checking its age/session. This guard is
+    # deliberately before strong keywords such as "result" or "admission".
+    if _is_stale_notice(
+        record.get("explicit_title") or record.get("title", ""),
+        record.get("context", ""), record.get("url", ""),
+        upload_date=_parse_upload_date(record.get("upload_date")),
+        pdf_text=record.get("pdf_text", ""),
+    ):
+        return False
     title = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
+    if _is_generic_title(title):
+        return False
     if any(sig in title for sig in _PRECLASS_STRONG):
         return True
     url = (record.get("url") or "").casefold()
@@ -4653,6 +4723,77 @@ def _run_dedup_self_tests():
     return failures
 
 
+def _run_quality_guard_self_tests():
+    failures = 0
+    cases = [
+        ("Read More chevron_right", True),
+        ("View All chevron_right", True),
+        ("chevron_right", True),
+        ("Read More About Recruitment Rules 2026", False),
+        ("ADVERTISEMENT FOR NON", False),
+    ]
+    for title, expected in cases:
+        got = _is_generic_title(title)
+        if got == expected:
+            print(f"[TEST-PASS ] Generic-title filter: {title!r}", file=sys.stderr)
+        else:
+            print(f"[TEST-FAIL ] Generic-title filter {title!r}: got={got}, expected={expected}", file=sys.stderr)
+            failures += 1
+
+    old_session_start = (datetime.now(timezone.utc).year if datetime.now(timezone.utc).month >= 7
+                         else datetime.now(timezone.utc).year - 1) - 1
+    old_session = f"{old_session_start}-{str((old_session_start + 1) % 100).zfill(2)}"
+    if _is_stale_notice(f"Provisional list for Ph.D. Admission {old_session}", "", "https://x.ac.in/admission"):
+        print("[TEST-PASS ] Old academic admission session suppressed", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Old academic admission session was not suppressed", file=sys.stderr)
+        failures += 1
+
+    old_result_cases = [
+        "PG SEM-3 EXAM-2023 (2022-24) COMMERCE RESULT",
+        "RESULT OF PG SEM 3 (2022-2022) SESSION M.A. AND M.Sc.",
+    ]
+    for old_result_title in old_result_cases:
+        record = {"title": old_result_title, "context": "", "url": "https://x.ac.in/result.pdf"}
+        if _is_stale_notice(old_result_title, "", record["url"]) and _keyword_pre_classify(record) is False:
+            print(f"[TEST-PASS ] Old result suppressed: {old_result_title[:55]}", file=sys.stderr)
+        else:
+            print(f"[TEST-FAIL ] Old result not suppressed: {old_result_title[:55]}", file=sys.stderr)
+            failures += 1
+
+    if not _meaningful_metadata_change(
+        "CLAT 2026 Admission Closure Notice", "CLAT 2026 Admission Closure Notice",
+        "CLAT 2026 Admission Closure Notice", "CLAT 2026 Admission Closure Notice Read More chevron_right"
+    ):
+        print("[TEST-PASS ] Same-title context/UI changes do not reprocess", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Same-title context/UI changes triggered reprocess", file=sys.stderr)
+        failures += 1
+
+    if _meaningful_metadata_change(
+        "Admission Notice 2026", "Admission Notice 2026",
+        "Last date: 10 October 2026", "Last date: 20 October 2026"
+    ):
+        print("[TEST-PASS ] Same-title deadline change remains meaningful", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Same-title deadline change was ignored", file=sys.stderr)
+        failures += 1
+
+    if baseline_can_complete(True, ["one broken detail link", "one pagination timeout"]):
+        print("[TEST-PASS ] Baseline can complete with a few partial errors", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Baseline blocked by a few partial errors", file=sys.stderr)
+        failures += 1
+    if not baseline_can_complete(False, []):
+        print("[TEST-PASS ] Failed scan cannot complete baseline", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Failed scan incorrectly completed baseline", file=sys.stderr)
+        failures += 1
+
+    print(f"[TEST] Quality-guards: {13 - failures}/13 cases, {failures} failed.", file=sys.stderr)
+    return failures
+
+
 def _run_title_cleanup_self_tests():
     failures = 0
     total = 0
@@ -5271,6 +5412,24 @@ def main():
             break
 
         batch = pending[start : start + batch_size]
+        active_batch = []
+        for iid, record in batch:
+            effective_title = record.get("explicit_title") or record.get("title", "")
+            if _is_stale_notice(
+                effective_title, record.get("context", ""), record.get("url", ""),
+                upload_date=_parse_upload_date(record.get("upload_date")),
+                pdf_text=record.get("pdf_text", ""),
+            ):
+                record["status"] = "baseline"
+                record["classification"] = None
+                record["summary"] = ""
+                record["last_error"] = "Stale notice suppressed before PDF/Gemini processing"
+                print(f"[STALE-SKIP] Before PDF/Gemini: {effective_title[:80]}", file=sys.stderr)
+                continue
+            active_batch.append((iid, record))
+        batch = active_batch
+        if not batch:
+            continue
         try:
             _fetch_pdfs_for_batch(batch, scan)
         except Exception as exc:
@@ -5292,11 +5451,23 @@ def main():
                     record["preclassified_at"] = utc_now()
                     print(f"[PRE-CLASSIFIED] {record.get('title', '')[:70]}")
                 elif pre is False:
-                    record["classification"] = {"important": False, "category": "other", "pre_classified": True}
-                    record["last_error"] = None
-                    record["status"] = "ignored"
-                    record["preclassified_at"] = utc_now()
-                    print(f"[PRE-IGNORED] Clear navigation title: {record.get('title', '')[:70]}")
+                    if _is_stale_notice(
+                        record.get("explicit_title") or record.get("title", ""),
+                        record.get("context", ""), record.get("url", ""),
+                        upload_date=_parse_upload_date(record.get("upload_date")),
+                        pdf_text=record.get("pdf_text", ""),
+                    ):
+                        record["classification"] = None
+                        record["summary"] = ""
+                        record["status"] = "baseline"
+                        record["last_error"] = "Stale notice suppressed before classification"
+                        print(f"[STALE-SKIP] {record.get('title', '')[:70]}", file=sys.stderr)
+                    else:
+                        record["classification"] = {"important": False, "category": "other", "pre_classified": True}
+                        record["last_error"] = None
+                        record["status"] = "ignored"
+                        record["preclassified_at"] = utc_now()
+                        print(f"[PRE-IGNORED] Clear navigation title: {record.get('title', '')[:70]}")
                 else:
                     gemini_batch.append((iid, record))
             result = {}
@@ -5476,6 +5647,7 @@ def main():
 if __name__ == "__main__":
     if "--test" in sys.argv:
         _fails = (_run_stale_notice_self_tests()
+                  + _run_quality_guard_self_tests()
                   + _run_title_cleanup_self_tests()
                   + _run_dedup_self_tests()
                   + _run_spa_self_tests()
