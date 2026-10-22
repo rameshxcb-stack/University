@@ -182,6 +182,7 @@
       "name": "Vinoba Bhave University, Hazaribagh",
       "url": "https://vbu.ac.in/",
       "enabled": true,
+      "verify_ssl": false,
       "js_render": "always",
       "js_wait_after_ms": 4500,
       "js_wait_for_selector": "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table",
@@ -211,6 +212,11 @@
       "url": "https://ranchiuniversity.ac.in/",
       "enabled": true,
       "js_render": "auto",
+      "js_wait_after_ms": 6000,
+      "js_wait_for_selector": "table, .notice, .news, #root, app-root, main, ng-view",
+      "js_selector_timeout_ms": 25000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 90,
       "keywords": [
         "recruitment",
         "notice",
@@ -275,6 +281,7 @@
       "name": "Jharkhand University of Technology, Ranchi",
       "url": "https://jutranchi.ac.in/",
       "enabled": true,
+      "verify_ssl": false,
       "js_render": "auto"
     },
     {
@@ -380,11 +387,11 @@
       "url": "https://aisectuniversity.ac.in/",
       "enabled": true,
       "js_render": "always",
-      "js_wait_after_ms": 5000,
+      "js_wait_after_ms": 7000,
       "js_wait_for_selector": "table, .notice, .notice-list, .news, .announcement, a[href*=\"pdf\"]",
       "js_scroll_bottom": true,
-      "request_timeout_seconds": 90,
-      "js_selector_timeout_ms": 20000
+      "request_timeout_seconds": 120,
+      "js_selector_timeout_ms": 30000
     }
   ]
 }
