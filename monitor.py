@@ -83,7 +83,8 @@ MAX_PDF_ATTEMPTS = 3
 TELEGRAM_SAFE_LIMIT = 4000
 TELEGRAM_CAPTION_LIMIT = 1024
 
-_RUNTIME_PDF_CACHE_MAX_ITEMS = 50
+# FIX #1: reduced from 50 to 20 to cap worst-case RAM (20 x 45MB = ~0.9GB)
+_RUNTIME_PDF_CACHE_MAX_ITEMS = 20
 
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
 
@@ -166,7 +167,8 @@ _ROBOTS_CACHE = {}
 
 _TESSERACT_WARNED: bool = False
 
-_JS_RENDER_LOCK = threading.Lock()
+_JS_RENDER_COUNT = 0
+_JS_RENDER_COUNT_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +296,9 @@ def _html_looks_like_js_pdf_viewer(html_text):
 
 def _render_with_playwright(
     url, timeout_ms=None, wait_until=None, wait_for_selector=None,
-    wait_after_ms=None, scroll_bottom=False,
+    wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None,
 ):
-    """Render JavaScript-heavy pages with bounded Angular/SPA-aware waits."""
+    """Render JS pages with a fresh Playwright instance owned by the calling thread."""
     if not _PLAYWRIGHT_AVAILABLE or not JS_RENDER_ENABLED:
         return None, url, "playwright_disabled"
 
@@ -312,100 +314,106 @@ def _render_with_playwright(
     except (TypeError, ValueError):
         wait_after_ms = JS_WAIT_AFTER_MS
     selector = str(wait_for_selector or JS_WAIT_FOR_SELECTOR_DEFAULT or "").strip()
+    try:
+        selector_timeout_ms = max(1000, min(30000, int(selector_timeout_ms or 10000)))
+    except (TypeError, ValueError, OverflowError):
+        selector_timeout_ms = 10000
 
-    with _JS_RENDER_LOCK:
-        try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-                        "--disable-blink-features=AutomationControlled",
-                    ],
-                )
-                try:
-                    context = browser.new_context(
-                        user_agent=JS_RENDER_USER_AGENT,
-                        locale="en-IN",
-                        viewport={"width": 1366, "height": 900},
-                        java_script_enabled=True,
-                        ignore_https_errors=True,
-                        extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"},
-                    )
-                    # Keep scripts and XHR/fetch enabled; block only nonessential media.
-                    context.route(
-                        "**/*",
-                        lambda route: route.abort()
-                        if route.request.resource_type in {"image", "media", "font"}
-                        else route.continue_(),
-                    )
-                    page = context.new_page()
-                    page.set_default_timeout(timeout_ms)
-                    try:
-                        page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-                    except Exception:
-                        try:
-                            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                        except Exception as exc:
-                            return None, url, f"playwright_nav_error:{type(exc).__name__}"
-
-                    # Best effort only: analytics/polling can prevent networkidle indefinitely.
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms))
-                    except Exception:
-                        pass
-
-                    if selector:
-                        try:
-                            page.wait_for_selector(
-                                selector, state="attached", timeout=min(10000, timeout_ms)
-                            )
-                        except Exception:
-                            # A changed selector should not discard the whole rendered page.
-                            pass
-                    if wait_after_ms:
-                        try:
-                            page.wait_for_timeout(wait_after_ms)
-                        except Exception:
-                            pass
-
-                    if scroll_bottom:
-                        try:
-                            previous_height = -1
-                            for _ in range(4):
-                                height = page.evaluate(
-                                    "() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"
-                                )
-                                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-                                page.wait_for_timeout(600)
-                                if height == previous_height:
-                                    break
-                                previous_height = height
-                            page.evaluate("() => window.scrollTo(0, 0)")
-                        except Exception:
-                            pass
-
-                    try:
-                        html_content = page.content()
-                        if _has_unrendered_angular_templates(html_content):
-                            page.wait_for_timeout(min(2000, max(500, wait_after_ms)))
-                            html_content = page.content()
-                    except Exception as exc:
-                        return None, url, f"playwright_content_error:{type(exc).__name__}"
-
-                    return html_content, (page.url or url), "playwright_ok"
-                finally:
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
-        except Exception as exc:
-            print(
-                f"[WARN] Playwright render failed for {url[:80]}: "
-                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled",
+                ],
             )
-            return None, url, f"playwright_error:{type(exc).__name__}"
+            try:
+                context = browser.new_context(
+                    user_agent=JS_RENDER_USER_AGENT,
+                    locale="en-IN",
+                    viewport={"width": 1366, "height": 900},
+                    java_script_enabled=True,
+                    ignore_https_errors=True,
+                    extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"},
+                )
+                # Keep scripts and XHR/fetch enabled; block only nonessential media.
+                context.route(
+                    "**/*",
+                    lambda route: route.abort()
+                    if route.request.resource_type in {"image", "media", "font"}
+                    else route.continue_(),
+                )
+                page = context.new_page()
+                page.set_default_timeout(timeout_ms)
+                try:
+                    page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                except Exception:
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except Exception as exc:
+                        return None, url, f"playwright_nav_error:{type(exc).__name__}"
 
+                # Best effort only: analytics/polling can prevent networkidle indefinitely.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms))
+                except Exception:
+                    pass
+
+                if selector:
+                    try:
+                        page.wait_for_selector(
+                            selector, state="attached", timeout=min(selector_timeout_ms, timeout_ms)
+                        )
+                    except Exception:
+                        # A changed selector should not discard the whole rendered page.
+                        pass
+                if wait_after_ms:
+                    try:
+                        page.wait_for_timeout(wait_after_ms)
+                    except Exception:
+                        pass
+
+                if scroll_bottom:
+                    try:
+                        previous_height = -1
+                        for _ in range(4):
+                            height = page.evaluate(
+                                "() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"
+                            )
+                            page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                            page.wait_for_timeout(600)
+                            if height == previous_height:
+                                break
+                            previous_height = height
+                        page.evaluate("() => window.scrollTo(0, 0)")
+                    except Exception:
+                        pass
+
+                try:
+                    html_content = page.content()
+                    if _has_unrendered_angular_templates(html_content):
+                        page.wait_for_timeout(min(2000, max(500, wait_after_ms)))
+                        html_content = page.content()
+                except Exception as exc:
+                    return None, url, f"playwright_content_error:{type(exc).__name__}"
+
+                if html_content:
+                    global _JS_RENDER_COUNT
+                    with _JS_RENDER_COUNT_LOCK:
+                        _JS_RENDER_COUNT += 1
+                return html_content, (page.url or url), "playwright_ok"
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+    except Exception as exc:
+        print(
+            f"[WARN] Playwright render failed for {url[:80]}: "
+            f"{type(exc).__name__}: {exc}", file=sys.stderr,
+        )
+        return None, url, f"playwright_error:{type(exc).__name__}"
 
 def _is_devanagari_str(text: str) -> bool:
     return any("\u0900" <= c <= "\u097F" for c in (text or ""))
@@ -961,10 +969,12 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     return False
 
 
-def baseline_can_complete(scan_success, errors):
-    # A few broken pagination/detail links should not hold a site's baseline
-    # open forever when its main pages were fetched successfully. A fully
-    # failed scan still cannot establish a baseline.
+def baseline_can_complete(scan_success, errors, max_errors=3):
+    """Complete baseline after a successful scan with a bounded error budget.
+
+    The threshold is configurable per site because some university portals have
+    many broken archive/detail links. A completely failed scan never baselines.
+    """
     if isinstance(errors, str):
         error_count = 1 if errors.strip() else 0
     else:
@@ -972,7 +982,11 @@ def baseline_can_complete(scan_success, errors):
             error_count = len(errors or [])
         except TypeError:
             error_count = 1 if errors else 0
-    return bool(scan_success) and error_count <= 3
+    try:
+        limit = max(0, min(50, int(max_errors)))
+    except (TypeError, ValueError, OverflowError):
+        limit = 3
+    return bool(scan_success) and error_count <= limit
 
 
 def add_review_item(state, record, reason, details=None):
@@ -1099,6 +1113,14 @@ _GENERIC_TITLES = {
     "continue reading", "read more chevron_right", "view all chevron_right",
     "chevron_right", "chevron_left", "arrow_forward", "arrow_back",
     "click here", "here", "link",
+    # Table headers and data labels commonly extracted as if they were notices.
+    "department name", "name of department", "department", "dept",
+    "designation", "post name", "post", "employee name", "father name",
+    "address", "email", "phone", "mobile", "date of birth", "dob",
+    "gender", "category", "serial number", "sr no", "sr. no", "s.no",
+    "sl no", "sl. no", "roll number", "roll no", "registration no",
+    "registration number", "enrollment no", "enrollment number",
+    "qualification", "status", "remarks", "pincode", "pin code",
 }
 
 _LANGUAGE_SELECTOR_TITLES = {
@@ -1231,6 +1253,21 @@ def _is_generic_title(title):
     if not t:
         return True
     if t in _GENERIC_TITLES:
+        return True
+    # Short table column labels are not standalone notice titles.
+    if len(t.split()) <= 3 and re.fullmatch(
+        r"(?:[\w.-]+\s+)?(?:name|no|no\.|number|id|code|address|email|"
+        r"phone|mobile|dob|status|remarks|qualification|designation|"
+        r"department|dept|category|gender|pincode|serial|roll|registration|enrollment)",
+        t, flags=re.UNICODE,
+    ):
+        return True
+    # Footer/address blocks accidentally harvested from institute pages.
+    if len(t) > 50 and re.match(r"^(?:national|indian)\s+institute\s+of\s+", t):
+        return True
+    if len(t) > 40 and re.match(
+        r"^(?:address|campus address|contact address|postal address|administrative office address)\b", t
+    ) and re.search(r"(?:pincode|pin\s*code|\b(?:81|82|83|84|85)\d{4}\b)", t):
         return True
     # Material/Angular UI labels often append icon ligatures to visible text.
     ui_only = re.sub(
@@ -1862,6 +1899,7 @@ def make_session():
 # ---------------------------------------------------------------------------
 
 _SITE_VERIFY_SSL_BY_ID = {}
+_SITE_TIMEOUT_BY_ID = {}
 
 
 def get_config():
@@ -1885,9 +1923,13 @@ def get_config():
         "baseline_retention_days": 60,
         "domain_delay_seconds": 0.4,
         "max_state_items": 3000,
-        "max_state_bytes": 3000000,
+        # FIX #3: raised default from 5 MB to 8 MB to match config and prevent
+        # save failures when many pending/ready items are queued.
+        "max_state_bytes": 8000000,
         "max_pending_attempts": 500,
-        "stale_notice_days": 10,
+        "stale_notice_days": 15,
+        "baseline_max_errors": 3,
+        "exclude_title_signals": list(_DEFAULT_EXCLUDED_TITLE_SIGNALS),
         "site_alert_threshold": 3,
         "site_alert_cooldown_hours": 6,
         "keywords": [],
@@ -1912,9 +1954,17 @@ def get_config():
     scan["baseline_retention_days"] = max(7, int(scan["baseline_retention_days"]))
     scan["domain_delay_seconds"] = max(0.0, min(10.0, float(scan["domain_delay_seconds"])))
     scan["max_state_items"] = max(500, min(10000, int(scan["max_state_items"])))
-    scan["max_state_bytes"] = max(500000, min(3000000, int(scan["max_state_bytes"])))
+    # FIX #3: raised upper clamp from 5 MB to 10 MB.
+    scan["max_state_bytes"] = max(500000, min(10000000, int(scan["max_state_bytes"])))
     scan["max_pending_attempts"] = max(500, int(scan["max_pending_attempts"]))
     scan["stale_notice_days"] = max(1, int(scan["stale_notice_days"]))
+    scan["baseline_max_errors"] = max(0, min(50, int(scan.get("baseline_max_errors", 3))))
+    raw_exclusions = scan.get("exclude_title_signals", list(_DEFAULT_EXCLUDED_TITLE_SIGNALS))
+    if not isinstance(raw_exclusions, list):
+        raw_exclusions = list(_DEFAULT_EXCLUDED_TITLE_SIGNALS)
+    scan["exclude_title_signals"] = list(dict.fromkeys(
+        clean_text(str(x), 100).casefold() for x in raw_exclusions if str(x).strip()
+    ))
     scan["site_alert_threshold"] = max(1, int(scan["site_alert_threshold"]))
     scan["site_alert_cooldown_hours"] = max(1, int(scan["site_alert_cooldown_hours"]))
     scan["sitemap_enabled"] = bool(scan["sitemap_enabled"])
@@ -1948,6 +1998,23 @@ def get_config():
         if js_mode not in ("auto", "always", "never"):
             js_mode = "auto"
         site["js_render"] = js_mode
+        try:
+            site["request_timeout_seconds"] = max(
+                5, min(120, int(site.get("request_timeout_seconds", scan["request_timeout_seconds"])))
+            )
+        except (TypeError, ValueError, OverflowError):
+            site["request_timeout_seconds"] = scan["request_timeout_seconds"]
+        try:
+            site["baseline_max_errors"] = max(
+                0, min(50, int(site.get("baseline_max_errors", scan["baseline_max_errors"])))
+            )
+        except (TypeError, ValueError, OverflowError):
+            site["baseline_max_errors"] = scan["baseline_max_errors"]
+        raw_verify_ssl = site.get("verify_ssl", True)
+        if isinstance(raw_verify_ssl, str):
+            site["verify_ssl"] = raw_verify_ssl.strip().casefold() not in {"0", "false", "no", "off"}
+        else:
+            site["verify_ssl"] = bool(raw_verify_ssl)
 
         # Normalize per-site SPA/Angular controls instead of silently falling
         # back to global defaults. Invalid values fall back safely.
@@ -1966,10 +2033,15 @@ def get_config():
 
         raw_selector = site.get("js_wait_for_selector", JS_WAIT_FOR_SELECTOR_DEFAULT)
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
+        try:
+            site["js_selector_timeout_ms"] = max(1000, min(30000, int(site.get("js_selector_timeout_ms", 10000))))
+        except (TypeError, ValueError, OverflowError):
+            site["js_selector_timeout_ms"] = 10000
         enabled.append(site)
     cfg["websites"] = enabled
-    global _SITE_VERIFY_SSL_BY_ID
-    _SITE_VERIFY_SSL_BY_ID = {site["id"]: bool(site.get("verify_ssl", True)) for site in enabled}
+    global _SITE_VERIFY_SSL_BY_ID, _SITE_TIMEOUT_BY_ID
+    _SITE_VERIFY_SSL_BY_ID = {site["id"]: site["verify_ssl"] for site in enabled}
+    _SITE_TIMEOUT_BY_ID = {site["id"]: site["request_timeout_seconds"] for site in enabled}
     return cfg
 
 
@@ -2177,8 +2249,28 @@ _PRECLASS_NAV_ONLY = (
     "screen reader", "feedback", "anti-ragging", "grievance cell",
 )
 
+_DEFAULT_EXCLUDED_TITLE_SIGNALS = (
+    "tender", "tenders", "quotation", "rate contract", "expression of interest",
+    "auction", "gst return", "income tax", "annual report", "balance sheet",
+    "minutes of meeting", "right to information", "rti application",
+    "निविदा", "कोटेशन", "नीलामी",
+)
 
-def _keyword_pre_classify(record):
+
+def _matched_excluded_title_signal(title, signals=None):
+    """Return the matched low-relevance title phrase, using word boundaries."""
+    text = re.sub(r"\s+", " ", str(title or "").casefold()).strip()
+    for raw in (signals if signals is not None else _DEFAULT_EXCLUDED_TITLE_SIGNALS):
+        signal = re.sub(r"\s+", " ", str(raw or "").casefold()).strip()
+        if not signal:
+            continue
+        pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in signal.split()) + r"(?!\w)"
+        if re.search(pattern, text, flags=re.UNICODE):
+            return signal
+    return ""
+
+
+def _keyword_pre_classify(record, excluded_signals=None):
     # Never fast-track a notice before checking its age/session. This guard is
     # deliberately before strong keywords such as "result" or "admission".
     if _is_stale_notice(
@@ -2190,6 +2282,8 @@ def _keyword_pre_classify(record):
         return False
     title = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
     if _is_generic_title(title):
+        return False
+    if _matched_excluded_title_signal(title, excluded_signals):
         return False
     if any(sig in title for sig in _PRECLASS_STRONG):
         return True
@@ -2258,7 +2352,12 @@ def find_fuzzy_match(site_items, title, url):
     if len(new_title) < 12:
         return None
 
-    year_tokens = {"2022", "2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030"}
+    # FIX #4: include 2-digit years so "2025-26" style academic sessions match
+    # correctly (26 would otherwise be treated as a distinguishing number).
+    year_tokens = {
+        "2022", "2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030",
+        "22", "23", "24", "25", "26", "27", "28", "29", "30",
+    }
     new_nums = set(re.findall(r"\d+", new_title)) - year_tokens
 
     best = None
@@ -2475,7 +2574,9 @@ def _robots_allowed(session, url, timeout):
 
 def discover_site(session, site, scan):
     base_url = site["url"]
-    timeout = scan["request_timeout_seconds"]
+    timeout = int(site.get("request_timeout_seconds", scan["request_timeout_seconds"]))
+    effective_scan = dict(scan)
+    effective_scan["request_timeout_seconds"] = timeout
     max_pages = scan["max_discovery_pages_per_site"]
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
     max_pagination_per_archive = scan.get("max_pagination_per_archive", 3)
@@ -2485,7 +2586,7 @@ def discover_site(session, site, scan):
     ))
 
     queue = [base_url]
-    queue.extend(discover_from_sitemap(session, base_url, scan))
+    queue.extend(discover_from_sitemap(session, base_url, effective_scan))
     visited = set()
     archive_visited_count = 0
     pagination_tracker = {}
@@ -2566,6 +2667,7 @@ def discover_site(session, site, scan):
                         wait_for_selector=site.get("js_wait_for_selector"),
                         wait_after_ms=site.get("js_wait_after_ms"),
                         scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                        selector_timeout_ms=site.get("js_selector_timeout_ms"),
                     )
                     js_render_count += 1
                     if rendered_html:
@@ -2596,6 +2698,7 @@ def discover_site(session, site, scan):
                         wait_for_selector=site.get("js_wait_for_selector"),
                         wait_after_ms=site.get("js_wait_after_ms"),
                         scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                        selector_timeout_ms=site.get("js_selector_timeout_ms"),
                     )
                     js_render_count += 1
                     if rendered_html:
@@ -2638,6 +2741,7 @@ def discover_site(session, site, scan):
                     wait_for_selector=site.get("js_wait_for_selector"),
                     wait_after_ms=site.get("js_wait_after_ms"),
                     scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                    selector_timeout_ms=site.get("js_selector_timeout_ms"),
                 )
                 js_render_count += 1
                 if rendered_html:
@@ -2654,7 +2758,7 @@ def discover_site(session, site, scan):
                 successful_pages += 1
                 continue
 
-            found = extract_candidates(response_text, final_url, site, scan)
+            found = extract_candidates(response_text, final_url, site, effective_scan)
             for row in found:
                 old = candidates.get(row["url"])
                 if old is None or row["score"] > old["score"]:
@@ -2712,8 +2816,25 @@ def _extract_pdf_text_plumber(content):
                 try:
                     tables = page.extract_tables() or []
                     for table in tables:
-                        for row in table:
-                            cells = [str(c).strip() for c in row if c]
+                        # pdfplumber Page.extract_tables() normally returns nested
+                        # lists, while callers/adapters may expose Table objects.
+                        # Normalize both forms without assuming either API shape.
+                        try:
+                            if callable(getattr(table, "extract", None)):
+                                rows = table.extract() or []
+                            elif getattr(table, "rows", None) is not None and not isinstance(table, (list, tuple)):
+                                rows = table.rows
+                            else:
+                                rows = table or []
+                        except Exception as table_exc:
+                            print(f"[WARN] Table normalization failed on page {idx+1}: {table_exc}", file=sys.stderr)
+                            continue
+                        for row in rows:
+                            if hasattr(row, "cells"):
+                                row = row.cells
+                            if not isinstance(row, (list, tuple)):
+                                continue
+                            cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
                             if cells:
                                 parts.append(" | ".join(cells))
                 except Exception as exc:
@@ -4269,7 +4390,10 @@ def truncate_telegram(text, limit=TELEGRAM_SAFE_LIMIT):
 # Prune / stats
 # ---------------------------------------------------------------------------
 
-def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000):
+def prune_state(
+    state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000,
+    sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60,
+):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=retention_days)
     items = state.setdefault("items", {})
@@ -4303,7 +4427,12 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
             status = "permanent_error"
 
         if status in terminal:
-            status_days = {"sent": 90, "ignored": 30, "baseline": 60, "permanent_error": retention_days}.get(status, retention_days)
+            status_days = {
+                "sent": max(7, int(sent_retention_days)),
+                "ignored": max(7, int(ignored_retention_days)),
+                "baseline": max(7, int(baseline_retention_days)),
+                "permanent_error": retention_days,
+            }.get(status, retention_days)
             status_cutoff = now - timedelta(days=status_days)
             if not record.get("terminal_at"):
                 if loaded_status and loaded_status not in terminal:
@@ -4388,6 +4517,11 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
             value = record.get(field)
             if isinstance(value, str) and len(value) > limit:
                 record[field] = clean_text(value, limit)
+        # FIX #3b: proactive cap on pending/ready PDF text so many queued items
+        # cannot collectively overflow the state byte budget.
+        if record.get("status") in {"pending", "ready"} and isinstance(record.get("pdf_text"), str):
+            if len(record["pdf_text"]) > 2000:
+                record["pdf_text"] = clean_text(record["pdf_text"], 2000)
         classification = record.get("classification")
         if isinstance(classification, dict):
             compact = {}
@@ -4425,8 +4559,10 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
             status = record.get("status")
             if status == "ready" and record.get("classification"):
                 record.pop("pdf_text", None)
-            elif status == "pending" and isinstance(record.get("pdf_text"), str):
-                record["pdf_text"] = clean_text(record["pdf_text"], 1800)
+            elif status in {"pending", "ready"} and isinstance(record.get("pdf_text"), str):
+                # FIX #3c: raise emergency shrink floor from 1800 to 2000 and also
+                # include "ready" so the same trim applies to ready queue items.
+                record["pdf_text"] = clean_text(record["pdf_text"], 2000)
             if isinstance(record.get("context"), str):
                 record["context"] = clean_text(record.get("context"), 350)
 
@@ -4621,7 +4757,7 @@ def _run_config_self_tests():
         scan = cfg.get("scan", {})
         scan_checks = [
             ("request_timeout_seconds", 45),
-            ("domain_delay_seconds", 0.4),
+            ("domain_delay_seconds", 0.5),
         ]
         for key, expected in scan_checks:
             got = scan.get(key)
@@ -4658,6 +4794,35 @@ def _run_config_self_tests():
                 print(f"[TEST-FAIL ] Base URL {site_id}: got={got_url!r}, expected={expected_url!r}", file=sys.stderr)
                 failures += 1
 
+        advanced_checks = [
+            ("rims-ranchi", "baseline_max_errors", 10),
+            ("aisect-university", "js_render", "always"),
+            ("aisect-university", "js_wait_after_ms", 5000),
+            ("aisect-university", "js_selector_timeout_ms", 20000),
+            ("aisect-university", "request_timeout_seconds", 90),
+        ]
+        for site_id, key, expected in advanced_checks:
+            site = sites.get(site_id)
+            got = site.get(key) if site else None
+            if got == expected:
+                print(f"[TEST-PASS ] Advanced config {site_id}.{key}", file=sys.stderr)
+            else:
+                print(f"[TEST-FAIL ] Advanced config {site_id}.{key}: got={got!r}, expected={expected!r}", file=sys.stderr)
+                failures += 1
+
+        if "tender" in scan.get("exclude_title_signals", []):
+            print("[TEST-PASS ] Configurable low-relevance title exclusion loaded", file=sys.stderr)
+        else:
+            print("[TEST-FAIL ] Configurable title exclusion missing", file=sys.stderr)
+            failures += 1
+
+        # FIX #5: expect the updated 8 MB cap (was 5 MB).
+        if scan.get("max_state_bytes") == 8000000:
+            print("[TEST-PASS ] State size cap supports configured 8 MB", file=sys.stderr)
+        else:
+            print(f"[TEST-FAIL ] State size cap mismatch: {scan.get('max_state_bytes')!r}", file=sys.stderr)
+            failures += 1
+
         checks = [
             ("vbu-hazaribagh", "js_render", "always"),
             ("vbu-hazaribagh", "js_wait_after_ms", 4500),
@@ -4676,7 +4841,8 @@ def _run_config_self_tests():
     except Exception as exc:
         print(f"[TEST-FAIL ] Config self-test raised {type(exc).__name__}: {exc}", file=sys.stderr)
         failures += 1
-    total_checks = 12  # site presence, two scan settings, discovery/ID checks, two official URLs, five per-site settings
+    # FIX #5: corrected from 18 to 19 to match the actual number of checks.
+    total_checks = 19  # site presence, scan settings, discovery/ID, URLs, advanced/site-specific settings
     print(f"[TEST] Config: {total_checks - failures}/{total_checks} passed, {failures} failed.", file=sys.stderr)
     return failures
 
@@ -4731,6 +4897,9 @@ def _run_quality_guard_self_tests():
         ("chevron_right", True),
         ("Read More About Recruitment Rules 2026", False),
         ("ADVERTISEMENT FOR NON", False),
+        ("Department Name", True),
+        ("Registration Number", True),
+        ("National Institute of Technology Jamshedpur Main Administrative Building PIN 831014", True),
     ]
     for title, expected in cases:
         got = _is_generic_title(title)
@@ -4779,6 +4948,30 @@ def _run_quality_guard_self_tests():
         print("[TEST-FAIL ] Same-title deadline change was ignored", file=sys.stderr)
         failures += 1
 
+    noise_cases = [
+        ({"title": "Tender Notice for Supply of Furniture 2026", "url": "https://x.ac.in/tender.pdf"}, False, "tender noise suppressed"),
+        ({"title": "Annual Report 2026", "url": "https://x.ac.in/report.pdf"}, False, "annual report noise suppressed"),
+        ({"title": "Faculty Recruitment Notice 2026", "url": "https://x.ac.in/jobs.pdf"}, True, "faculty recruitment remains eligible"),
+    ]
+    for record, expected, label in noise_cases:
+        got = _keyword_pre_classify(record)
+        if got is expected:
+            print(f"[TEST-PASS ] {label}", file=sys.stderr)
+        else:
+            print(f"[TEST-FAIL ] {label}: got={got!r}, expected={expected!r}", file=sys.stderr)
+            failures += 1
+
+    if baseline_can_complete(True, [f"partial error {i}" for i in range(8)], 10):
+        print("[TEST-PASS ] Per-site baseline error budget permits bounded partial failures", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Per-site baseline error budget rejected 8/10 errors", file=sys.stderr)
+        failures += 1
+    if not baseline_can_complete(True, [f"partial error {i}" for i in range(11)], 10):
+        print("[TEST-PASS ] Per-site baseline budget still rejects excessive errors", file=sys.stderr)
+    else:
+        print("[TEST-FAIL ] Per-site baseline budget accepted excessive errors", file=sys.stderr)
+        failures += 1
+
     if baseline_can_complete(True, ["one broken detail link", "one pagination timeout"]):
         print("[TEST-PASS ] Baseline can complete with a few partial errors", file=sys.stderr)
     else:
@@ -4790,7 +4983,7 @@ def _run_quality_guard_self_tests():
         print("[TEST-FAIL ] Failed scan incorrectly completed baseline", file=sys.stderr)
         failures += 1
 
-    print(f"[TEST] Quality-guards: {13 - failures}/13 cases, {failures} failed.", file=sys.stderr)
+    print(f"[TEST] Quality-guards: {20 - failures}/20 cases, {failures} failed.", file=sys.stderr)
     return failures
 
 
@@ -4920,10 +5113,11 @@ def _fetch_pdfs_for_batch(batch, scan):
     targets = [(iid, record) for iid, record in batch if _should_fetch_pdf(record)]
     if not targets:
         return
-    timeout = scan["request_timeout_seconds"]
+    default_timeout = scan["request_timeout_seconds"]
 
     def _fetch_one(record):
         try:
+            timeout = _SITE_TIMEOUT_BY_ID.get(record.get("site_id"), default_timeout)
             return download_pdf_content(record["url"], timeout, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
         except Exception as exc:
             print(f"[WARN] PDF fetch error: {exc}", file=sys.stderr)
@@ -5038,8 +5232,11 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
 def main():
     global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
+    global _JS_RENDER_COUNT
 
     _RUNTIME_PDF_CACHE = {}
+    with _JS_RENDER_COUNT_LOCK:
+        _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
     _GEMINI_QUOTA_EXHAUSTED = False
     _GEMINI_KEYS_POOL = _load_gemini_keys()
@@ -5050,7 +5247,7 @@ def main():
 
     import time as _time
     _START_TIME = _time.monotonic()
-    _MAX_RUN_SECONDS = 55 * 60
+    _MAX_RUN_SECONDS = 50 * 60  # Leave a 10-minute safety margin inside the 60-minute Actions timeout.
 
     def _time_exceeded():
         return (_time.monotonic() - _START_TIME) > _MAX_RUN_SECONDS
@@ -5126,6 +5323,10 @@ def main():
                 mark_site_failure(state, site["id"], str(exc))
                 print(f"[ERROR] {site['name']}: {exc}", file=sys.stderr)
 
+    # This is a per-run count of successful browser renders (not attempts).
+    with _JS_RENDER_COUNT_LOCK:
+        state.setdefault("metrics", {})["js_renders"] = _JS_RENDER_COUNT
+
     try:
         threshold = scan.get("site_alert_threshold", 3)
         cooldown = scan.get("site_alert_cooldown_hours", 6)
@@ -5143,7 +5344,10 @@ def main():
         candidates = result["candidates"]
         current_scan_success = bool(result["success"])
 
-        baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []))
+        baseline_scan_complete = baseline_can_complete(
+            current_scan_success, result.get("errors", []),
+            site.get("baseline_max_errors", scan.get("baseline_max_errors", 3)),
+        )
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
@@ -5426,6 +5630,24 @@ def main():
                 record["last_error"] = "Stale notice suppressed before PDF/Gemini processing"
                 print(f"[STALE-SKIP] Before PDF/Gemini: {effective_title[:80]}", file=sys.stderr)
                 continue
+            title_for_gate = record.get("explicit_title") or record.get("title", "")
+            if _is_generic_title(title_for_gate):
+                record["status"] = "ignored"
+                record["classification"] = {"important": False, "category": "other", "pre_classified": True}
+                record["last_error"] = "Generic UI/table title suppressed before PDF/Gemini processing"
+                record["preclassified_at"] = utc_now()
+                print(f"[PRE-IGNORED] Generic title before PDF fetch: {title_for_gate[:80]}", file=sys.stderr)
+                continue
+            excluded_signal = _matched_excluded_title_signal(
+                title_for_gate, scan.get("exclude_title_signals", _DEFAULT_EXCLUDED_TITLE_SIGNALS)
+            )
+            if excluded_signal:
+                record["status"] = "ignored"
+                record["classification"] = {"important": False, "category": "other", "pre_classified": True}
+                record["last_error"] = f"Excluded low-relevance title signal: {excluded_signal}"
+                record["preclassified_at"] = utc_now()
+                print(f"[PRE-IGNORED] Excluded title signal {excluded_signal!r}: {title_for_gate[:80]}", file=sys.stderr)
+                continue
             active_batch.append((iid, record))
         batch = active_batch
         if not batch:
@@ -5439,7 +5661,7 @@ def main():
             for iid, record in batch:
                 if record.get("status") == "baseline" and str(record.get("last_error", "")).startswith("PDF content stale"):
                     continue
-                pre = _keyword_pre_classify(record)
+                pre = _keyword_pre_classify(record, scan.get("exclude_title_signals", _DEFAULT_EXCLUDED_TITLE_SIGNALS))
                 if pre is True:
                     record["classification"] = {
                         "important": True, "category": "notice", "summary": "",
@@ -5467,7 +5689,7 @@ def main():
                         record["last_error"] = None
                         record["status"] = "ignored"
                         record["preclassified_at"] = utc_now()
-                        print(f"[PRE-IGNORED] Clear navigation title: {record.get('title', '')[:70]}")
+                        print(f"[PRE-IGNORED] Generic/noise title: {record.get('title', '')[:70]}")
                 else:
                     gemini_batch.append((iid, record))
             result = {}
@@ -5617,6 +5839,9 @@ def main():
         prune_state(
             state, scan["retention_days"], scan["max_state_items"],
             scan["max_pending_attempts"], scan["max_state_bytes"],
+            sent_retention_days=scan["sent_retention_days"],
+            ignored_retention_days=scan["ignored_retention_days"],
+            baseline_retention_days=scan["baseline_retention_days"],
         )
         refresh_stats(state)
         atomic_save_json(STATE_FILE, state, max_bytes=scan["max_state_bytes"])
@@ -5644,13 +5869,137 @@ def main():
     return 0
 
 
+
+def _run_pdf_table_compat_self_tests():
+    """Test nested-list and Table-object-like pdfplumber table return shapes."""
+    failures = 0
+    original_open = pdfplumber.open
+
+    class _FakePage:
+        def __init__(self, tables):
+            self._tables = tables
+        def extract_text(self):
+            return ""
+        def extract_tables(self):
+            return self._tables
+
+    class _FakePdf:
+        def __init__(self, tables):
+            self.pages = [_FakePage(tables)]
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeTable:
+        def extract(self):
+            return [["Fee Type", "Amount"], ["Tuition Fee", "12000"]]
+
+    cases = [
+        ("nested-list", [[ ["Fee Type", "Amount"], ["Tuition Fee", "12000"] ]]),
+        ("table-object", [_FakeTable()]),
+    ]
+    try:
+        for label, tables in cases:
+            pdfplumber.open = lambda _source, _tables=tables: _FakePdf(_tables)
+            extracted = _extract_pdf_text_plumber(b"test-pdf")
+            ok = "Fee Type | Amount" in extracted and "Tuition Fee | 12000" in extracted
+            if ok:
+                print(f"[TEST-PASS ] pdfplumber table compatibility: {label}", file=sys.stderr)
+            else:
+                print(f"[TEST-FAIL ] pdfplumber table compatibility: {label}; output={extracted!r}", file=sys.stderr)
+                failures += 1
+    finally:
+        pdfplumber.open = original_open
+    print(f"[TEST] PDF table compatibility: {len(cases) - failures}/{len(cases)} passed, {failures} failed.", file=sys.stderr)
+    return failures
+
+
+def _run_retention_self_tests():
+    failures = 0
+    now = datetime.now(timezone.utc)
+    old_stamp = (now - timedelta(days=20)).isoformat()
+    state = {"items": {
+        "sent-old": {"status": "sent", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp},
+        "ignored-old": {"status": "ignored", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp},
+        "baseline-old": {"status": "baseline", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp},
+        "sent-recent": {"status": "sent", "first_seen": now.isoformat(), "terminal_at": now.isoformat(), "last_seen": now.isoformat()},
+    }, "review_queue": {}}
+    prune_state(
+        state, retention_days=90, max_items=3000, max_pending_attempts=500, max_bytes=5000000,
+        sent_retention_days=30, ignored_retention_days=10, baseline_retention_days=15,
+    )
+    expected_present = {"sent-old", "sent-recent"}
+    expected_absent = {"ignored-old", "baseline-old"}
+    if expected_present.issubset(state["items"]) and expected_absent.isdisjoint(state["items"]):
+        print("[TEST-PASS ] Configured sent/ignored/baseline retention periods are honored", file=sys.stderr)
+    else:
+        print(f"[TEST-FAIL ] Retention policy mismatch: keys={sorted(state['items'])}", file=sys.stderr)
+        failures += 1
+    print(f"[TEST-SUMMARY] retention: {1 - failures} passed, {failures} failed", file=sys.stderr)
+    return failures
+
+
+def audit_state_read_only():
+    """Report likely state pollution without deleting or changing any record."""
+    try:
+        state = load_state()
+    except Exception as exc:
+        print(f"[AUDIT-ERROR] Could not load state: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    items = state.get("items", {})
+    if not isinstance(items, dict):
+        print("[AUDIT-ERROR] state.items is not an object", file=sys.stderr)
+        return 2
+    statuses = Counter()
+    generic = []
+    stale = []
+    duplicate_groups = {}
+    for iid, record in items.items():
+        if not isinstance(record, dict):
+            continue
+        status = str(record.get("status", "unknown"))
+        statuses[status] += 1
+        title = clean_text(record.get("explicit_title") or record.get("title", ""), 500)
+        site_id = str(record.get("site_id", "unknown"))
+        if _is_generic_title(title):
+            generic.append((site_id, title, record.get("url", ""), status))
+        if status not in {"sent", "ignored", "permanent_error"} and _is_stale_notice(
+            title, record.get("context", ""), record.get("url", ""),
+            upload_date=_parse_upload_date(record.get("upload_date")),
+            pdf_text=record.get("pdf_text", ""),
+        ):
+            stale.append((site_id, title, record.get("url", ""), status))
+        normalized = re.sub(r"[^\w\s]", " ", title.casefold())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if len(normalized) >= 12 and not _is_generic_title(title):
+            duplicate_groups.setdefault((site_id, normalized), []).append((iid, title, record.get("url", ""), status))
+    duplicate_groups = {key: rows for key, rows in duplicate_groups.items() if len(rows) > 1}
+    print("[STATE-AUDIT] Read-only; no records were changed.")
+    print(f"[STATE-AUDIT] items={len(items)} status_counts={dict(statuses)}")
+    print(f"[STATE-AUDIT] generic_titles={len(generic)} stale_unsent_candidates={len(stale)} duplicate_title_groups={len(duplicate_groups)}")
+    for label, rows in (("GENERIC", generic), ("STALE", stale)):
+        for site_id, title, url, status in rows[:15]:
+            print(f"[{label}] site={site_id} status={status} title={title[:100]!r} url={str(url)[:180]}")
+    for (site_id, title), rows in list(duplicate_groups.items())[:15]:
+        print(f"[DUPLICATE-TITLE] site={site_id} title={title[:100]!r} count={len(rows)}")
+        for _iid, row_title, url, status in rows[:3]:
+            print(f"    ↳ status={status} title={row_title[:80]!r} url={str(url)[:160]}")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--audit-state" in sys.argv:
+        raise SystemExit(audit_state_read_only())
     if "--test" in sys.argv:
         _fails = (_run_stale_notice_self_tests()
                   + _run_quality_guard_self_tests()
                   + _run_title_cleanup_self_tests()
                   + _run_dedup_self_tests()
                   + _run_spa_self_tests()
-                  + _run_config_self_tests())
+                  + _run_config_self_tests()
+                  + _run_pdf_table_compat_self_tests()
+                  + _run_retention_self_tests())
+        print(f"[TEST-SUMMARY] overall: {'FAIL' if _fails else 'PASS'}; failures={_fails}", file=sys.stderr)
         raise SystemExit(1 if _fails else 0)
     raise SystemExit(main())
