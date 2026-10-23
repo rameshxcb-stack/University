@@ -2,13 +2,13 @@
   "scan": {
     "request_timeout_seconds": 45,
     "max_workers": 5,
-    "max_items_per_site": 100,
-    "max_discovery_pages_per_site": 15,
-    "max_archive_pages_per_site": 25,
+    "max_items_per_site": 75,
+    "max_discovery_pages_per_site": 10,
+    "max_archive_pages_per_site": 20,
     "max_pagination_per_archive": 4,
     "max_new_items_per_run": 25,
     "gemini_batch_size": 3,
-    "gemini_max_calls_per_run": 20,
+    "gemini_max_calls_per_run": 15,
     "retention_days": 60,
     "sent_retention_days": 180,
     "ignored_retention_days": 30,
@@ -217,13 +217,14 @@
       "id": "aisect-university",
       "name": "AISECT University, Hazaribagh",
       "url": "https://aisectuniversity.ac.in/",
-      "enabled": false,
+      "enabled": true,
       "js_render": "always",
       "js_wait_after_ms": 10000,
       "js_wait_for_selector": "table, .notice, .notice-list, .news, .announcement, .notice-item, .announcement-list, a[href*=\"pdf\"], a[href*=\"notice\"]",
       "js_scroll_bottom": true,
       "request_timeout_seconds": 120,
-      "js_selector_timeout_ms": 45000
+      "js_selector_timeout_ms": 45000,
+      "baseline_max_errors": 10
     }
   ]
 }
