@@ -117,7 +117,10 @@
       "name": "Jamshedpur Women's University",
       "url": "https://jwu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "always",
+      "js_wait_after_ms": 6000,
+      "js_wait_for_selector": "table, .notice, .news, nav",
+      "js_selector_timeout_ms": 15000
     },
     {
       "id": "bmtu-khunti",
