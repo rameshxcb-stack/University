@@ -61,6 +61,7 @@ TELEGRAM_MAX_ATTEMPTS = 100
 TELEGRAM_RETRY_WINDOW_HOURS = 168
 TELEGRAM_RETRY_BASE_MINUTES = 20
 TELEGRAM_RETRY_MAX_MINUTES = 360
+
 MAX_PDF_SEND_BYTES = 45 * 1024 * 1024
 MAX_GEMINI_PDF_BYTES = 18 * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "8"))
@@ -69,18 +70,23 @@ MAX_PDF_RAW_TEXT_CHARS = 8000
 MAX_PDF_ATTEMPTS = 3
 TELEGRAM_SAFE_LIMIT = 4000
 TELEGRAM_CAPTION_LIMIT = 1024
+
 _RUNTIME_PDF_CACHE_MAX_ITEMS = 20
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
+
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").strip().lower() == "true"
 OCR_DPI = int(os.getenv("OCR_DPI", "150"))
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "200"))
 OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "2"))
 _OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "4"))
+
 TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").strip().lower() == "true"
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "hin+eng").strip() or "hin+eng"
 TESSERACT_PSM = os.getenv("TESSERACT_PSM", "6").strip()
+
 GEMINI_PDF_OCR_ENABLED = os.getenv("GEMINI_PDF_OCR_ENABLED", "true").strip().lower() == "true"
 SEND_PDF_ENABLED = os.getenv("SEND_PDF_ENABLED", "true").strip().lower() == "true"
+
 JS_RENDER_ENABLED = os.getenv("JS_RENDER_ENABLED", "true").strip().lower() == "true"
 JS_RENDER_TIMEOUT_MS = int(os.getenv("JS_RENDER_TIMEOUT_MS", "25000"))
 JS_WAIT_UNTIL = os.getenv("JS_WAIT_UNTIL", "domcontentloaded").strip() or "domcontentloaded"
@@ -98,11 +104,34 @@ STALE_NOTICE_DAYS = int(os.getenv("STALE_NOTICE_DAYS", "10"))
 OLD_YEAR_HINT_YEARS_BACK = int(os.getenv("OLD_YEAR_HINT_YEARS_BACK", "2"))
 ETAG_CHECK_MAX_AGE_DAYS = int(os.getenv("ETAG_CHECK_MAX_AGE_DAYS", "14"))
 
-USER_AGENT = os.getenv("MONITOR_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-JS_RENDER_USER_AGENT = os.getenv("JS_RENDER_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+USER_AGENT = os.getenv(
+    "MONITOR_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+JS_RENDER_USER_AGENT = os.getenv(
+    "JS_RENDER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
 
 STRONG_KEYWORDS = [
-    "admission", "result", "admit card", "answer key", "examination", "exam", "semester", "revaluation", "migration", "certificate", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "hostel", "convocation", "registration", "enrollment", "merit", "marksheet", "transcript", "bonafide", "grading", "cgpa", "gpa", "phd", "ph.d", "research", "internship", "challan", "demand draft", "eligibility", "qualification", "provisional", "backlog", "reappear", "supplementary", "marks", "score", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र", "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास", "दीक्षांत समारोह", "पंजीकरण", "नामांकन", "मेरिट", "अंकतालिका", "अनुसंधान"
+    "admission", "result", "admit card", "answer key", "examination",
+    "exam", "semester", "revaluation", "migration", "certificate",
+    "scholarship", "fee", "syllabus", "timetable", "counselling",
+    "recruitment", "vacancy", "tender", "notice", "notification",
+    "placement", "hostel", "convocation", "registration", "enrollment",
+    "merit", "marksheet", "transcript", "bonafide", "grading", "cgpa", "gpa",
+    "phd", "ph.d", "research", "internship", "challan", "demand draft",
+    "eligibility", "qualification", "provisional", "backlog", "reappear",
+    "supplementary", "marks", "score",
+    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
+    "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र",
+    "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग",
+    "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास",
+    "दीक्षांत समारोह", "पंजीकरण", "नामांकन",
+    "मेरिट", "अंकतालिका", "अनुसंधान"
 ]
 
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -112,10 +141,12 @@ _GEMINI_KEYS_POOL: List[str] = []
 _GEMINI_KEY_INDEX: int = 0
 _GEMINI_DEAD_KEYS: set = set()
 _GEMINI_KEY_LOCK = threading.Lock()
+
 _MODELS_DISCOVERED: bool = False
 _DYNAMIC_MODELS: List[str] = []
 _DEAD_MODELS: set = set()
 _GEMINI_QUOTA_EXHAUSTED: bool = False
+
 _RAPIDOCR_INSTANCE = None
 _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
@@ -123,22 +154,110 @@ _JS_RENDER_COUNT = 0
 _JS_RENDER_COUNT_LOCK = threading.Lock()
 
 _NAV_SIGNALS: Tuple[str, ...] = (
-    "home", "homepage", "about us", "about", "contact us", "contact", "feedback", "site map", "sitemap", "skip to content", "accessibility", "screen reader", "whats new", "what's new", "whatsnew", "latest news", "latest update", "latest updates", "photo gallery", "video gallery", "gallery", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "social media", "follow us", "share", "login", "sign in", "sign up", "register", "logout", "main menu", "menu", "navigation", "मुख्य पृष्ठ", "होम", "हमारे बारे में", "संपर्क करें", "संपर्क", "फीडबैक", "साइट मैप", "स्क्रीन रीडर", "महत्वपूर्ण लिंक", "त्वरित लिंक", "नई खबरें", "ताज़ा खबर", "अंतिम अपडेट", "गैलरी", "फोटो गैलरी"
+    "home", "homepage", "about us", "about", "contact us", "contact",
+    "feedback", "site map", "sitemap", "skip to content",
+    "accessibility", "screen reader",
+    "whats new", "what's new", "whatsnew", "latest news", "latest update",
+    "latest updates", "photo gallery", "video gallery", "gallery",
+    "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin",
+    "social media", "follow us", "share",
+    "login", "sign in", "sign up", "register", "logout",
+    "main menu", "menu", "navigation",
+    "मुख्य पृष्ठ", "होम", "हमारे बारे में", "संपर्क करें", "संपर्क",
+    "फीडबैक", "साइट मैप", "स्क्रीन रीडर", "महत्वपूर्ण लिंक", "त्वरित लिंक",
+    "नई खबरें", "ताज़ा खबर", "अंतिम अपडेट", "गैलरी", "फोटो गैलरी",
 )
 
 _NOTICE_SIGNALS: Tuple[str, ...] = (
-    "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना"
+    "admission", "result", "admit card", "answer key", "examination",
+    "exam", "revaluation", "migration", "scholarship", "fee", "syllabus",
+    "timetable", "counselling", "recruitment", "vacancy", "tender",
+    "notice", "notification", "placement", "convocation", "registration",
+    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
+    "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना",
 )
 
-_EXPLICIT_DUMP_SIGNALS: Tuple[str, ...] = ("skip to content", "site map", "sitemap", "मुख्य पृष्ठ", "महत्वपूर्ण लिंक", "त्वरित लिंक")
-_STRICT_EARLY_NAV_SIGNALS: Tuple[str, ...] = ("home", "homepage", "whats new", "what's new", "whatsnew", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "skip to content", "sitemap", "site map", "मुख्य पृष्ठ", "होम", "साइट मैप")
+_EXPLICIT_DUMP_SIGNALS: Tuple[str, ...] = (
+    "skip to content", "site map", "sitemap",
+    "मुख्य पृष्ठ", "महत्वपूर्ण लिंक", "त्वरित लिंक",
+)
+
+_STRICT_EARLY_NAV_SIGNALS: Tuple[str, ...] = (
+    "home", "homepage", "whats new", "what's new", "whatsnew",
+    "facebook", "twitter", "instagram", "youtube", "whatsapp",
+    "linkedin", "skip to content", "sitemap", "site map",
+    "मुख्य पृष्ठ", "होम", "साइट मैप",
+)
+
 _DEVANAGARI_DELIMS = r"[\s\|•\-–—,:;()\[\]{}/\\?!\"'`]"
 _LATIN_LEFT_BOUNDARY = r"(?<![A-Za-z0-9_])"
 _LATIN_RIGHT_BOUNDARY = r"(?![A-Za-z0-9_])"
+
 _TITLE_STRIP_SIGNALS: Tuple[str, ...] = tuple(sorted(_STRICT_EARLY_NAV_SIGNALS, key=len, reverse=True))
 
-_JS_REQUIRED_MARKERS = ('<div id="root"', '<div id="app"', '<div id="__next"', '<div id="__nuxt"', 'ng-app', 'ng-version', 'data-reactroot', 'data-v-app', 'please enable javascript', 'javascript is disabled', 'you need to enable javascript', 'enable javascript and cookies', 'enable javascript to run', 'loading...', 'loading…', 'जावास्क्रिप्ट सक्षम', 'ng-cloak', 'ng-controller', 'ng-repeat', 'ng-bind', 'ng-view', 'ng-include', 'ng-scope', 'ng-binding', 'angular.js', 'angular.min.js', 'angular-route', 'react.production', 'react-dom.production', 'vue.min.js', 'vue.runtime', 'data-v-', '__next_data__', '_next/static', '__nuxt__', '_nuxt/')
-_JS_PDF_VIEWER_MARKERS = ("pdfjs", "pdf.js", "pdfobject", "viewer.html", "docs.google.com/viewer", "drive.google.com/file", "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html")
+_JS_REQUIRED_MARKERS = (
+    '<div id="root"', '<div id="app"', '<div id="__next"', '<div id="__nuxt"',
+    'ng-app', 'ng-version', 'data-reactroot', 'data-v-app',
+    'please enable javascript', 'javascript is disabled',
+    'you need to enable javascript', 'enable javascript and cookies',
+    'enable javascript to run', 'loading...', 'loading…',
+    'जावास्क्रिप्ट सक्षम', 'ng-cloak', 'ng-controller', 'ng-repeat', 'ng-bind', 'ng-view',
+    'ng-include', 'ng-scope', 'ng-binding', 'angular.js', 'angular.min.js',
+    'angular-route', 'react.production', 'react-dom.production',
+    'vue.min.js', 'vue.runtime', 'data-v-', '__next_data__', '_next/static',
+    '__nuxt__', '_nuxt/',
+)
+
+_JS_PDF_VIEWER_MARKERS = (
+    "pdfjs", "pdf.js", "pdfobject", "viewer.html",
+    "docs.google.com/viewer", "drive.google.com/file",
+    "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html",
+)
+
+# ============================================================
+# NEW: Central notice-keyword list used by _should_fetch_pdf and _is_non_notice_pdf
+# Fixes Bug 1 (notification not substring of notice) and Bug 4 (missing keywords)
+# ============================================================
+_NOTICE_KEYWORDS = [
+    # English - primary notice/document types
+    "notice", "notification", "announcement", "circular", "advertisement", "publicity",
+    "exam", "examination", "result", "admit", "form",
+    "tender", "quotation", "bid", "rfp", "eoi", "nit",
+    "recruitment", "vacancy", "appointment", "interview", "apprentice",
+    "syllabus", "curriculum",
+    "date sheet", "date extended", "last date", "due date", "exam date",
+    "schedule", "timetable", "time-table", "time table",
+    "calendar",
+    "fee", "payment", "challan",
+    "merit", "marksheet", "score", "grade", "cgpa", "gpa",
+    "scholarship",
+    "counselling", "counseling",
+    "migration", "certificate", "transcript", "bonafide", "provisional",
+    "registration", "enrollment", "enrolment",
+    "convocation", "placement", "hostel",
+    "prospectus",
+    "semester", "revaluation", "rechecking",
+    "internship",
+    "eligibility", "qualification",
+    # Hindi
+    "सूचना", "अधिसूचना", "विज्ञापन", "नोटिस",
+    "परीक्षा", "परीक्षा कार्यक्रम", "परीक्षा केंद्र",
+    "परिणाम", "रिजल्ट",
+    "प्रवेश", "प्रवेश पत्र",
+    "भर्ती", "नियुक्ति", "साक्षात्कार", "रिक्त पद",
+    "निविदा", "कोटेशन",
+    "छात्रवृत्ति", "शुल्क",
+    "पाठ्यक्रम", "समय सारिणी", "समय", "कैलेंडर",
+    "मेरिट", "अंकतालिका",
+    "काउंसलिंग",
+    "माइग्रेशन", "प्रमाण पत्र",
+    "पंजीकरण", "नामांकन",
+    "दीक्षांत",
+    "पुनर्मूल्यांकन",
+    "सेमेस्टर",
+    "प्लेसमेंट",
+    "छात्रावास",
+]
 
 def _page_requires_js(html_text):
     if not html_text: return True
@@ -156,8 +275,7 @@ def _page_requires_js(html_text):
     except Exception: return True
     return False
 
-def _has_unrendered_angular_templates(html_text):
-    return bool(re.search(r"\{\{[^}]{1,200}\}\}", html_text or ""))
+def _has_unrendered_angular_templates(html_text): return bool(re.search(r"\{\{[^}]{1,200}\}\}", html_text or ""))
 
 def _should_render_js(site, html_text, page_url):
     mode = str((site or {}).get("js_render", "auto")).strip().lower()
@@ -183,6 +301,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
     selector = str(wait_for_selector or JS_WAIT_FOR_SELECTOR_DEFAULT or "").strip()
     try: selector_timeout_ms = max(1000, min(60000, int(selector_timeout_ms or 10000)))
     except (TypeError, ValueError, OverflowError): selector_timeout_ms = 10000
+    
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
@@ -231,8 +350,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
         print(f"[WARN] Playwright render failed for {url[:80]}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None, url, f"playwright_error:{type(exc).__name__}"
 
-def _is_devanagari_str(text: str) -> bool:
-    return any("\u0900" <= c <= "\u097F" for c in (text or ""))
+def _is_devanagari_str(text: str) -> bool: return any("\u0900" <= c <= "\u097F" for c in (text or ""))
 
 def _match_signal(text: str, signal: str) -> bool:
     if not text or not signal: return False
@@ -258,7 +376,11 @@ def _count_nav_signals(text: str) -> int:
             remaining = new_remaining
     return matched
 
-_NOTICE_DOC_URL_HINTS = ("/writereaddata/", "/uploadfile/", "/uploads/", "/downloadfile", "/download_file", "/getfile", "/showfile", "/viewfile", "/filedownload", "/attachment", "/documents/", "/docs/", "/notice/", "/notice_", "/download/")
+_NOTICE_DOC_URL_HINTS = (
+    "/writereaddata/", "/uploadfile/", "/uploads/", "/downloadfile", "/download_file", "/getfile",
+    "/showfile", "/viewfile", "/filedownload", "/attachment", "/documents/", "/docs/",
+    "/notice/", "/notice_", "/download/",
+)
 
 def _is_notice_document_url(url):
     if not url: return False
@@ -407,8 +529,7 @@ def _get_next_gemini_key():
     return None
 
 def _has_live_gemini_keys():
-    with _GEMINI_KEY_LOCK:
-        return any(key not in _GEMINI_DEAD_KEYS for key in _GEMINI_KEYS_POOL)
+    with _GEMINI_KEY_LOCK: return any(key not in _GEMINI_DEAD_KEYS for key in _GEMINI_KEYS_POOL)
 
 def _mark_gemini_key_dead(key, reason="quota exhausted"):
     if not key: return
@@ -548,6 +669,8 @@ MEANINGFUL_FIELDS = {
     "vacancy_count": [r"(?:total vacancies?|no\. of vacancies?|vacancies|पदों की संख्या|कुल पद|रिक्त पद)\s*[:：-]?\s*([\d,]+)"],
     "admit_card_date": [r"(?:admit card download|admit card available|प्रवेश पत्र डाउनलोड)\s*[:：-]?\s*([^\n,;]{1,50})"],
     "counselling_date": [r"(?:counselling date|काउंसलिंग तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "age_limit": [r"(?:age limit|आयु सीमा)\s*[:：-]?\s*([^\n,;]{1,70})"],
+    "eligibility": [r"(?:eligibility|educational qualification|योग्यता|शैक्षणिक योग्यता)\s*[:：-]?\s*([^\n;]{1,120})"],
 }
 
 def extract_meaningful_fields(text):
@@ -613,10 +736,14 @@ def add_review_item(state, record, reason, details=None):
     key = hashlib.sha256((record.get("site_id", "") + "|" + record.get("url", "")).encode("utf-8")).hexdigest()
     previous = queue.get(key, {})
     queue[key] = {
-        "site_id": record.get("site_id"), "site_name": record.get("site_name"), "url": record.get("url"), "title": record.get("title"),
-        "reason": clean_text(str(reason), 500), "detected_dates": extract_meaningful_fields("\n".join([record.get("title", ""), record.get("context", ""), record.get("pdf_text", "")])),
-        "gemini_output": record.get("classification"), "diff_summary": details or record.get("meaningful_diff", {}), "status": "open",
-        "retry_count": int(previous.get("retry_count", 0)) + (1 if previous else 0), "first_seen": previous.get("first_seen", utc_now()), "updated_at": utc_now(),
+        "site_id": record.get("site_id"), "site_name": record.get("site_name"),
+        "url": record.get("url"), "title": record.get("title"),
+        "reason": clean_text(str(reason), 500),
+        "detected_dates": extract_meaningful_fields("\n".join([record.get("title", ""), record.get("context", ""), record.get("pdf_text", "")])),
+        "gemini_output": record.get("classification"),
+        "diff_summary": details or record.get("meaningful_diff", {}),
+        "status": "open", "retry_count": int(previous.get("retry_count", 0)) + (1 if previous else 0),
+        "first_seen": previous.get("first_seen", utc_now()), "updated_at": utc_now(),
     }
 
 def _check_url_changed(session, url, record, verify_ssl=True):
@@ -683,7 +810,7 @@ _GENERIC_TITLES = {
     "department name", "name of department", "department", "dept", "designation", "post name", "post", "employee name", "father name",
     "address", "email", "phone", "mobile", "date of birth", "dob", "gender", "category", "serial number", "sr no", "sr. no", "s.no",
     "sl no", "sl. no", "roll number", "roll no", "registration no", "registration number", "enrollment no", "enrollment number",
-    "qualification", "status", "remarks", "pincode", "pin code",
+    "qualification", "status", "remarks", "pincode", "pin code", "notices & announcements", "notices and announcements", "tenders", "placement statistics", "research cluster",
 }
 _LANGUAGE_SELECTOR_TITLES = {
     "hindi", "english", "santali", "santhali", "urdu", "bengali", "bangla", "odia", "oriya", "tamil", "telugu", "marathi",
@@ -1143,7 +1270,7 @@ def get_config():
     if not isinstance(cfg, dict): raise RuntimeError("websites.json root must be an object")
     scan = cfg.get("scan") or {}
     defaults = {
-        "request_timeout_seconds": 45, "max_workers": 6, "max_items_per_site": 100, "max_discovery_pages_per_site": 15, "max_archive_pages_per_site": 20, "max_pagination_per_archive": 4, "max_new_items_per_run": 30, "gemini_batch_size": 3, "gemini_max_calls_per_run": 20, "retention_days": 90, "sent_retention_days": 90, "ignored_retention_days": 30, "baseline_retention_days": 60, "domain_delay_seconds": 0.4, "max_state_items": 3000, "max_state_bytes": 8000000, "max_pending_attempts": 500, "stale_notice_days": 15, "baseline_max_errors": 3, "exclude_title_signals": list(_DEFAULT_EXCLUDED_TITLE_SIGNALS), "site_alert_threshold": 3, "site_alert_cooldown_hours": 6, "keywords": [], "discovery_keywords": [], "sitemap_enabled": True,
+        "request_timeout_seconds": 45, "max_workers": 5, "max_items_per_site": 75, "max_discovery_pages_per_site": 10, "max_archive_pages_per_site": 20, "max_pagination_per_archive": 4, "max_new_items_per_run": 25, "gemini_batch_size": 3, "gemini_max_calls_per_run": 15, "retention_days": 90, "sent_retention_days": 180, "ignored_retention_days": 30, "baseline_retention_days": 90, "domain_delay_seconds": 0.4, "max_state_items": 3000, "max_state_bytes": 8000000, "max_pending_attempts": 500, "stale_notice_days": 15, "baseline_max_errors": 3, "exclude_title_signals": list(_DEFAULT_EXCLUDED_TITLE_SIGNALS), "site_alert_threshold": 3, "site_alert_cooldown_hours": 6, "keywords": [], "discovery_keywords": [], "sitemap_enabled": True,
     }
     for key, value in defaults.items(): scan.setdefault(key, value)
     scan["request_timeout_seconds"] = max(5, int(scan["request_timeout_seconds"]))
@@ -1338,9 +1465,16 @@ def _matched_excluded_title_signal(title, signals=None):
 
 def _keyword_pre_classify(record, excluded_signals=None):
     if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
-    title = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
+
+    # Bug 3 fix: exclusion check uses TITLE ONLY (not pdf_text) so tender notices with
+    # words like "annual report" inside their body are not wrongly excluded.
+    title_for_exclusion = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
+    if _matched_excluded_title_signal(title_for_exclusion, excluded_signals): return False
+
+    # Combined title (with pdf_text prefix) for further classification checks
+    title = " ".join((record.get("explicit_title") or "", record.get("title") or "", (record.get("pdf_text") or "")[:500])).casefold()
+
     if _is_generic_title(title): return False
-    if _matched_excluded_title_signal(title, excluded_signals): return False
     words = title.split()
     if len(re.findall(r'(?:►|»|›|→|▸|▶)', title)) >= 1:
         print(f"[NAV-FILTER] arrow: {title[:80]}", file=sys.stderr)
@@ -1460,7 +1594,6 @@ def extract_candidates(html_text, page_url, site, scan):
         if parent is None: parent = a.find_parent(["div", "td"])
         context = clean_text(parent.get_text(" ", strip=True) if parent else "", 700)
 
-        # === NEW: Smart Walk-Up Title Logic ===
         if _is_generic_title(title) or len(title) < 5:
             context_parts = re.split(r"[|\n\r\t]+", context)
             context_title = ""
@@ -1470,7 +1603,6 @@ def extract_candidates(html_text, page_url, site, scan):
                     context_title = part
                     break
             
-            # Walk up DOM to find a proper heading
             if not context_title or _is_generic_title(context_title):
                 walker = parent
                 for _ in range(3):
@@ -1481,7 +1613,7 @@ def extract_candidates(html_text, page_url, site, scan):
                         h = walker.find(htag)
                         if h:
                             htext = clean_text(h.get_text(" ", strip=True), 300)
-                            if (len(htext) >= 10 and not _is_generic_title(htext) 
+                            if (len(htext) >= 5 and not _is_generic_title(htext) 
                                 and not _looks_like_menu_dump(htext) and not _is_garbage_title(htext)):
                                 context_title = htext
                                 break
@@ -1489,7 +1621,6 @@ def extract_candidates(html_text, page_url, site, scan):
             
             title = context_title or _title_from_url(href, min_len=5) or ""
             if not title or _is_generic_title(title): continue
-        # ====================================
 
         if _is_language_selector(title):
             parent_text = clean_text(parent.get_text(" ", strip=True) if parent else "", 300)
@@ -1896,8 +2027,16 @@ def _text_looks_garbage(text):
     return False
 
 _TITLE_KEYWORDS = (
-    "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना",
+    "निविदा", "विज्ञापन", "सूचना", "नोटिस", "भर्ती", "परीक्षा",
+    "परिणाम", "आवेदन", "रिक्त", "पद", "नियुक्ति", "चयन", "शुद्धिपत्र",
+    "corrigendum", "amendment", "notice", "tender", "advertisement",
+    "recruitment", "vacancy", "result", "notification", "circular",
+    "admission", "exam", "revaluation", "migration", "scholarship", 
+    "fee", "syllabus", "timetable", "counselling", "placement", 
+    "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र", 
+    "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क"
 )
+
 _BOILERPLATE_HINTS = ("पता:", "address:", "फोन", "phone", "email", "e-mail", "website", "वेबसाइट", "दूरभाष", "fax", "फैक्स")
 
 def _score_pdf_title_line(line, index):
@@ -2480,10 +2619,7 @@ def format_message(site, item, classification=None):
     title_hi = _safe_str(classification.get("title_hi"), 200)
     title_is_hindi = _is_devanagari(raw_title)
     site_name = html.escape(site["name"])
-    
-    # === NEW: Hashtag Logic ===
     site_tag = "#" + site["id"].replace("-", "_").upper()
-    
     url = html.escape(item["url"], quote=True)
     summary_raw = _safe_str(classification.get("summary")) or ""
     if summary_raw.strip().lower() == raw_title.strip().lower(): summary_raw = ""
@@ -2496,8 +2632,6 @@ def format_message(site, item, classification=None):
     elif ocr_method == "tesseract": ocr_marker = " 🔍T"
     else: ocr_marker = ""
     pdf_marker = " 📄" if item.get("is_pdf") else ""
-    
-    # Hashtag included in first line
     lines = [f"🔔 <b>{site_name}</b> {site_tag}{pdf_marker}", ""]
     lines.append(f"<b>{html.escape(raw_title)}</b>{ocr_marker}")
     if not title_is_hindi and title_hi and title_hi.strip().lower() != raw_title.strip().lower():
@@ -2791,7 +2925,7 @@ def _run_config_self_tests():
         else:
             print(f"[TEST-FAIL ] State size cap mismatch: {scan.get('max_state_bytes')!r}", file=sys.stderr)
             failures += 1
-        checks = [("vbu-hazaribagh", "js_render", "always"), ("vbu-hazaribagh", "js_wait_after_ms", 4500), ("vbu-hazaribagh", "js_scroll_bottom", True), ("vbu-hazaribagh", "js_wait_for_selector", "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table"), ("bbmku-dhanbad", "js_wait_after_ms", 3500)]
+        checks = [("vbu-hazaribagh", "js_render", "always"), ("vbu-hazaribagh", "js_wait_after_ms", 7000), ("vbu-hazaribagh", "js_scroll_bottom", True), ("vbu-hazaribagh", "js_wait_for_selector", "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table"), ("bbmku-dhanbad", "js_wait_after_ms", 3500)]
         for site_id, key, expected in checks:
             site = sites.get(site_id)
             got = site.get(key) if site else None
@@ -2877,7 +3011,7 @@ def _run_quality_guard_self_tests():
     else:
         print("[TEST-FAIL ] Per-site baseline error budget rejected 8/10 errors", file=sys.stderr)
         failures += 1
-    if not baseline_can_complete(True, [f"partial error {i}" for i in range(11)], 10): print("[TEST-PASS ] Per-site baseline error budget still rejects excessive errors", file=sys.stderr)
+    if not baseline_can_complete(True, [f"partial error {i}" for i in range(11)], 10): print("[TEST-PASS ] Per-site baseline budget still rejects excessive errors", file=sys.stderr)
     else:
         print("[TEST-FAIL ] Per-site baseline budget accepted excessive errors", file=sys.stderr)
         failures += 1
@@ -2948,25 +3082,64 @@ def _run_title_cleanup_self_tests():
     print(f"[TEST] Title-cleanup: {total - failures}/{total} passed, {failures} failed.", file=sys.stderr)
     return failures
 
+def _is_non_notice_pdf(record):
+    """Bug 6 fix: used to skip RE-PROCESS on faculty/personal PDFs.
+    Returns True if the URL is a .pdf but title has no notice keyword."""
+    url_lower = (record.get("url") or "").lower()
+    if not (url_lower.endswith(".pdf") or ".pdf" in url_lower):
+        return False
+    combined = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
+    return not any(kw in combined for kw in _NOTICE_KEYWORDS)
+
 def _should_fetch_pdf(record):
     if record.get("pdf_extracted") or record.get("pdf_text"): return False
     if int(record.get("pdf_attempts", 0)) >= MAX_PDF_ATTEMPTS: return False
     url = record.get("url", "")
     url_lower = url.lower()
-    if any(pat in url_lower for pat in ("/past-notices", "/past_notices", "/whats-new", "/whats_new", "/notice_category", "/notice-category", "/document-category", "/document_category", "/archive", "/search", "/contact-us", "/contact_us", "/contactus", "/about-district", "/about_district", "/photo-gallery", "/photo_gallery", "/video-gallery", "/video_gallery", "/anti-ragging", "/grievance", "/rti")): return False
+
     try:
         parsed = urlparse(url)
         if parsed.path in ("", "/"): return False
     except Exception: pass
-    if record.get("is_pdf", False): return True
+
+    # ============================================================
+    # Bug 2 fix: Title check comes FIRST (before URL blocklist), so a legitimate
+    # notice PDF under /adminrie/files/ is fetched, while faculty/personal PDFs
+    # are skipped even if they live under /faculty/ etc.
+    # Bug 1 fix: _NOTICE_KEYWORDS includes "notification", "convocation", etc.
+    # ============================================================
+    if url_lower.endswith(".pdf") or ".pdf" in url_lower:
+        title_lower = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
+        if not any(kw in title_lower for kw in _NOTICE_KEYWORDS):
+            print(f"[SKIP-PDF] Non-notice PDF (faculty/other): {title_lower[:60]}", file=sys.stderr)
+            return False
+
+    # Bug 4 fix: /faculty/, /profile/, /staff/, /adminrie/files/ removed from blocklist.
+    # Faculty PDFs are caught by the title check above; faculty HTML pages return
+    # False naturally at the bottom (no is_pdf flag, no known endpoint).
+    block_patterns = (
+        "/past-notices", "/past_notices", "/whats-new", "/whats_new",
+        "/notice_category", "/notice-category", "/document-category",
+        "/document_category", "/archive", "/search",
+        "/contact-us", "/contact_us", "/contactus",
+        "/about-district", "/about_district",
+        "/photo-gallery", "/photo_gallery", "/video-gallery", "/video_gallery",
+        "/anti-ragging", "/grievance", "/rti",
+    )
+    if any(pat in url_lower for pat in block_patterns): return False
+
     if any(hint in url_lower for hint in ("/downloadfile", "/download_file", "/downloadpdf", "/download_pdf", "/getfile", "/showfile", "/viewfile", "/filedownload", "/writereaddata/", "/uploadfile/", "/storage/notices/", "/storage/notice/", "/documents/notice", "/notice-documents/")): return True
+    if record.get("is_pdf", False): return True
     return False
 
-def _fetch_pdfs_for_batch(batch, scan):
+def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
     targets = [(iid, record) for iid, record in batch if _should_fetch_pdf(record)]
     if not targets: return
     default_timeout = scan["request_timeout_seconds"]
     def _fetch_one(record):
+        # Bug 5 fix: abort PDF fetch if we're past the reserved send deadline
+        if send_deadline and time.monotonic() > send_deadline:
+            return None, "", False, "time_limit", ""
         try:
             timeout = _SITE_TIMEOUT_BY_ID.get(record.get("site_id"), default_timeout)
             return download_pdf_content(record["url"], timeout, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
@@ -3064,7 +3237,11 @@ def main():
 
     import time as _time
     _START_TIME = _time.monotonic()
-    _MAX_RUN_SECONDS = 50 * 60
+    _MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", str(90 * 60)))  # 90 mins default
+    # Bug 5 fix: reserve 15 minutes (900s) for the send phase so batch processing never
+    # eats into it. Batch loop stops at 75 min, send loop has 75-90 min.
+    _SEND_RESERVE_SECONDS = int(os.getenv("SEND_RESERVE_SECONDS", "900"))
+    send_deadline = _START_TIME + _MAX_RUN_SECONDS - _SEND_RESERVE_SECONDS
     def _time_exceeded(): return (_time.monotonic() - _START_TIME) > _MAX_RUN_SECONDS
 
     try:
@@ -3208,13 +3385,19 @@ def main():
                     metadata_changed = _meaningful_metadata_change(old_title, new_title, old_context, new_context)
                     record["last_seen"] = utc_now()
                     current_status = record.get("status")
+
+                    # Bug 6 fix: skip RE-PROCESS for non-notice PDFs (faculty/personal files)
                     if metadata_changed and current_status in {"ignored", "baseline"}:
-                        record["status"] = "pending"
-                        record.pop("terminal_at", None)
-                        record["attempts"] = 0; record["last_error"] = None; record["classification"] = None; record["summary"] = ""; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0; record["ocr_used"] = False; record["pdf_method"] = ""
-                        record.pop("pdf_summary_hint", None)
-                        print(f"[RE-PROCESS] Ignored/baseline notice meaningfully changed: {candidate['url'][:100]}")
-                    elif metadata_changed and current_status == "sent": print(f"[SKIP-RE-PROCESS] Already sent; metadata-only change ignored: {candidate['url'][:100]}")
+                        if _is_non_notice_pdf(record):
+                            print(f"[SKIP-RE-PROCESS] Non-notice PDF (faculty/other): {candidate['url'][:100]}", file=sys.stderr)
+                        else:
+                            record["status"] = "pending"
+                            record.pop("terminal_at", None)
+                            record["attempts"] = 0; record["last_error"] = None; record["classification"] = None; record["summary"] = ""; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0; record["ocr_used"] = False; record["pdf_method"] = ""
+                            record.pop("pdf_summary_hint", None)
+                            print(f"[RE-PROCESS] Ignored/baseline notice meaningfully changed: {candidate['url'][:100]}")
+                    elif metadata_changed and current_status == "sent":
+                        print(f"[SKIP-RE-PROCESS] Already sent; metadata-only change ignored: {candidate['url'][:100]}")
                     if new_title: record["title"] = new_title
                     if candidate.get("explicit_title"): record["explicit_title"] = candidate["explicit_title"]
                     if new_context: record["context"] = new_context
@@ -3267,10 +3450,13 @@ def main():
                     old_context = record.get("context", "")
                     new_context = candidate.get("context", "")
                     if _meaningful_metadata_change(old_title, new_title, old_context, new_context):
-                        record["status"] = "pending"
-                        record["attempts"] = 0; record["last_error"] = None; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0
-                        record.pop("pdf_summary_hint", None)
-                        print(f"[RE-PROCESS] Substantive baseline metadata change: {new_title[:80]}")
+                        if _is_non_notice_pdf(record):
+                            print(f"[SKIP-RE-PROCESS] Non-notice PDF (baseline): {candidate['url'][:100]}", file=sys.stderr)
+                        else:
+                            record["status"] = "pending"
+                            record["attempts"] = 0; record["last_error"] = None; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0
+                            record.pop("pdf_summary_hint", None)
+                            print(f"[RE-PROCESS] Substantive baseline metadata change: {new_title[:80]}")
                 if candidate["title"]: record["title"] = candidate["title"]
                 if candidate.get("explicit_title"): record["explicit_title"] = candidate["explicit_title"]
                 if candidate.get("context"): record["context"] = candidate["context"][:700]
@@ -3289,7 +3475,7 @@ def main():
 
     batch_size = scan["gemini_batch_size"]
     for start in range(0, len(pending), batch_size):
-        if _time_exceeded():
+        if _time.monotonic() > send_deadline:
             print("[TIME_LIMIT] Processing budget reached — remaining items pending for next run", file=sys.stderr)
             break
         batch = pending[start : start + batch_size]
@@ -3322,7 +3508,7 @@ def main():
             active_batch.append((iid, record))
         batch = active_batch
         if not batch: continue
-        try: _fetch_pdfs_for_batch(batch, scan)
+        try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline)
         except Exception as exc: print(f"[WARN] PDF batch fetch failed: {exc}", file=sys.stderr)
         try:
             gemini_batch = []
@@ -3351,7 +3537,15 @@ def main():
                         print(f"[PRE-IGNORED] Generic/noise title: {record.get('title', '')[:70]}")
                 else: gemini_batch.append((iid, record))
             result = {}
-            if gemini_batch: result = gemini_classify_with_fallback([record for _, record in gemini_batch], gemini_key, scan["request_timeout_seconds"])
+            if gemini_batch:
+                # Bug 5 fix: skip Gemini if we've used the reserved send budget
+                if _time.monotonic() > send_deadline:
+                    print(f"[TIME_LIMIT] Gemini budget reached — {len(gemini_batch)} item(s) pending for next run", file=sys.stderr)
+                    for iid, record in gemini_batch:
+                        record["status"] = "pending"
+                        record["last_error"] = "Skipped Gemini — time budget reached"
+                    break
+                result = gemini_classify_with_fallback([record for _, record in gemini_batch], gemini_key, scan["request_timeout_seconds"])
             for index, (_, record) in enumerate(gemini_batch):
                 record["attempts"] = int(record.get("attempts", 0)) + 1
                 classification = result.get(str(index))
@@ -3387,7 +3581,7 @@ def main():
     sent_count = 0
     for iid, record in ready[: scan["max_new_items_per_run"]]:
         if _time_exceeded():
-            print("[TIME_LIMIT] Processing budget reached — unsent notices remain ready for next run", file=sys.stderr)
+            print("[TIME_LIMIT] Run time exhausted — unsent notices remain ready for next run", file=sys.stderr)
             break
         site = next((s for s in cfg["websites"] if s["id"] == record.get("site_id")), None)
         if site is None:
