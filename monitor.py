@@ -2588,19 +2588,44 @@ def discover_site(session, site, scan):
             elif response is not None and response.status_code >= 400:
                 raise RuntimeError(f"HTTP {response.status_code}")
 
-            if response is not None and not rendered_from_waf and _looks_like_pdf_response(response.content, content_type, final_url):
-                filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
-                candidates[final_url] = {
-                    "url": final_url, "title": clean_text(filename, 300),
-                    "context": "Direct PDF notice", "source_page": page,
-                    "is_pdf": True, "score": 3, "upload_date": None,
-                }
-                successful_pages += 1
-                continue
-
-            if response is not None and not rendered_from_waf and content_type and "html" not in content_type and "xhtml" not in content_type:
-                print(f"[SKIP] Non-HTML content-type={content_type[:60]!r} at {page}", file=sys.stderr)
-                continue
+            # ============================================================
+            # ⬇️ UPDATED: PDF + Office document detection (DOCX/DOC/XLSX/XLS/PPTX/PPT)
+            # Also handles HTML skip for truly non-relevant content types.
+            # This block REPLACES the older two separate checks.
+            # ============================================================
+            if response is not None and not rendered_from_waf and content_type:
+                ct_lower = content_type.lower()
+                is_pdf_resp = _looks_like_pdf_response(response.content, ct_lower, final_url)
+                is_office_doc = (
+                    "application/vnd.openxmlformats" in ct_lower   # .docx, .xlsx, .pptx
+                    or "application/msword" in ct_lower             # .doc
+                    or "application/vnd.ms-excel" in ct_lower       # .xls
+                    or "application/vnd.ms-powerpoint" in ct_lower  # .ppt
+                )
+                if is_pdf_resp:
+                    filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
+                    candidates[final_url] = {
+                        "url": final_url, "title": clean_text(filename, 300),
+                        "context": "Direct PDF notice", "source_page": page,
+                        "is_pdf": True, "score": 3, "upload_date": None,
+                    }
+                    successful_pages += 1
+                    continue
+                if is_office_doc:
+                    filename = final_url.rsplit("/", 1)[-1] or "Document Notice"
+                    print(f"[DOC-NOTICE] Office document detected: {filename[:80]}", file=sys.stderr)
+                    candidates[final_url] = {
+                        "url": final_url, "title": clean_text(filename, 300),
+                        "context": "Direct document notice", "source_page": page,
+                        "is_pdf": True,   # reuse existing file-attachment send pipeline
+                        "score": 3, "upload_date": None,
+                    }
+                    successful_pages += 1
+                    continue
+                if "html" not in ct_lower and "xhtml" not in ct_lower:
+                    print(f"[SKIP] Non-HTML, non-document content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
+                    continue
+            # ============================================================
 
             js_mode = site.get("js_render", "auto")
             source_html = response.text if response is not None else (response_text or "")
