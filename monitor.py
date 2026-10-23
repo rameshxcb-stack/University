@@ -2183,6 +2183,47 @@ def _keyword_pre_classify(record, excluded_signals=None):
         return False
     if _matched_excluded_title_signal(title, excluded_signals):
         return False
+
+    # ===== NAV FILTER (CORRECTED) =====
+    words = title.split()
+
+    # Rule 1: Arrow/bullet separators (nav menu indicator)
+    if len(re.findall(r'(?:►|»|›|→|▸|▶)', title)) >= 1:
+        print(f"[NAV-FILTER] arrow: {title[:80]}", file=sys.stderr)
+        return False
+
+    # Rule 2: Long title (8+ words) with NO strong notice pattern
+    if len(words) >= 8:
+        strong_notice_patterns = [
+            r'\b(?:admission|result|admit card|answer key|examination|'
+            r'revaluation|scholarship|timetable|syllabus|recruitment|'
+            r'tender|counselling|registration|convocation|migration|'
+            r'interview|appointment|apprentice)\b',
+            r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
+            r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
+        ]
+        if not any(re.search(p, title) for p in strong_notice_patterns):
+            print(f"[NAV-FILTER] long-no-notice: {title[:80]}", file=sys.stderr)
+            return False
+
+    # Rule 3: Repeated NAV signal word ONLY (About About, Home Home)
+    for i in range(len(words) - 1):
+        if words[i] == words[i + 1] and words[i] in _NAV_SIGNALS:
+            print(f"[NAV-FILTER] repeat-nav: {title[:80]}", file=sys.stderr)
+            return False
+
+    # Rule 4: "About [specific site]" prefix
+    if re.match(r'^about\s+(?:us|capital\s+university|the\s+university|the\s+institute|the\s+college)\b', title):
+        print(f"[NAV-FILTER] about-prefix: {title[:80]}", file=sys.stderr)
+        return False
+
+    # Rule 5: Dense nav title (3+ nav signals in ≤10 words)
+    nav_count = _count_nav_signals(title)
+    if nav_count >= 3 and len(words) <= 10:
+        print(f"[NAV-FILTER] dense-nav({nav_count}): {title[:80]}", file=sys.stderr)
+        return False
+    # ===== END NAV FILTER =====
+
     if any(sig in title for sig in _PRECLASS_STRONG):
         return True
     url = (record.get("url") or "").casefold()
@@ -2589,9 +2630,7 @@ def discover_site(session, site, scan):
                 raise RuntimeError(f"HTTP {response.status_code}")
 
             # ============================================================
-            # ⬇️ UPDATED: PDF + Office document detection (DOCX/DOC/XLSX/XLS/PPTX/PPT)
-            # Also handles HTML skip for truly non-relevant content types.
-            # This block REPLACES the older two separate checks.
+            # PDF + Office document detection (DOCX/DOC/XLSX/XLS/PPTX/PPT)
             # ============================================================
             if response is not None and not rendered_from_waf and content_type:
                 ct_lower = content_type.lower()
@@ -2617,7 +2656,7 @@ def discover_site(session, site, scan):
                     candidates[final_url] = {
                         "url": final_url, "title": clean_text(filename, 300),
                         "context": "Direct document notice", "source_page": page,
-                        "is_pdf": True,   # reuse existing file-attachment send pipeline
+                        "is_pdf": True,
                         "score": 3, "upload_date": None,
                     }
                     successful_pages += 1
@@ -5094,6 +5133,19 @@ def main():
     except Exception as exc:
         print(f"[FATAL] Configuration/state error: {exc}", file=sys.stderr)
         return 2
+
+    # ===== NEW: Reveal baseline-stuck sites =====
+    for _site in cfg["websites"]:
+        _s = site_state(state, _site["id"])
+        if not _s.get("baseline_complete", False):
+            print(
+                f"[BASELINE-STUCK] {_site['name']}: "
+                f"reason={_s.get('baseline_pending_reason', 'unknown')}, "
+                f"last_error={_s.get('last_error', 'none')}, "
+                f"failures={_s.get('consecutive_failures', 0)}",
+                file=sys.stderr
+            )
+    # ===== END NEW =====
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
