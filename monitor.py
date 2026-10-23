@@ -2184,7 +2184,7 @@ def _keyword_pre_classify(record, excluded_signals=None):
     if _matched_excluded_title_signal(title, excluded_signals):
         return False
 
-    # ===== NAV FILTER (CORRECTED) =====
+    # ===== NAV FILTER (CORRECTED v2) =====
     words = title.split()
 
     # Rule 1: Arrow/bullet separators (nav menu indicator)
@@ -2193,18 +2193,28 @@ def _keyword_pre_classify(record, excluded_signals=None):
         return False
 
     # Rule 2: Long title (8+ words) with NO strong notice pattern
+    #         BUT skip filter if title is date-prefixed (events/notices)
     if len(words) >= 8:
-        strong_notice_patterns = [
-            r'\b(?:admission|result|admit card|answer key|examination|'
-            r'revaluation|scholarship|timetable|syllabus|recruitment|'
-            r'tender|counselling|registration|convocation|migration|'
-            r'interview|appointment|apprentice)\b',
-            r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
-            r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
-        ]
-        if not any(re.search(p, title) for p in strong_notice_patterns):
-            print(f"[NAV-FILTER] long-no-notice: {title[:80]}", file=sys.stderr)
-            return False
+        date_prefixed = bool(re.match(r'^\s*\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b', title))
+        if not date_prefixed:
+            strong_notice_patterns = [
+                r'\b(?:admission|result|admit card|answer key|examination|'
+                r'revaluation|scholarship|timetable|syllabus|recruitment|'
+                r'tender|counselling|registration|convocation|migration|'
+                r'interview|appointment|apprentice|'
+                # Procurement / tender (NEW)
+                r'goods|product|services|supply|purchase|installation|'
+                r'procurement|quotation|bid|rfp|eoi|nit|camc|amc|kva|'
+                r'equipment|machinery|hardware|software|panel|'
+                # Events (NEW)
+                r'webinar|workshop|seminar|conference|symposium|'
+                r'ceremony|graduation|colloquium|conclave)\b',
+                r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
+                r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
+            ]
+            if not any(re.search(p, title) for p in strong_notice_patterns):
+                print(f"[NAV-FILTER] long-no-notice: {title[:80]}", file=sys.stderr)
+                return False
 
     # Rule 3: Repeated NAV signal word ONLY (About About, Home Home)
     for i in range(len(words) - 1):
@@ -2221,6 +2231,14 @@ def _keyword_pre_classify(record, excluded_signals=None):
     nav_count = _count_nav_signals(title)
     if nav_count >= 3 and len(words) <= 10:
         print(f"[NAV-FILTER] dense-nav({nav_count}): {title[:80]}", file=sys.stderr)
+        return False
+
+    # Rule 6: Contact / footer page (NEW)
+    if re.search(
+        r'\bcall\s+us\b|\bemail\s+[\w.+-]+@[\w.-]+\.\w{2,}|\bphone\s*[:\-]?\s*\d{6,}|\bwhatsapp\b',
+        title, re.I
+    ):
+        print(f"[NAV-FILTER] contact-page: {title[:80]}", file=sys.stderr)
         return False
     # ===== END NAV FILTER =====
 
@@ -2309,11 +2327,14 @@ def find_fuzzy_match(site_items, title, url):
 
 
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
+    # ===== FIX: Title similarity check to prevent template/default PDF false positives =====
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     new_site = record.get("site_id")
     if not new_hash or not new_kind or not new_site:
         return None
+    new_title_norm = _normalize_title(record.get("title", ""))
+
     for other_iid, other in state.get("items", {}).items():
         if other_iid == exclude_iid or not isinstance(other, dict):
             continue
@@ -2323,8 +2344,14 @@ def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
             continue
         if other.get("pdf_hash_kind") != new_kind:
             continue
-        if other.get("pdf_hash") == new_hash:
-            return other.get("title") or other_iid
+        if other.get("pdf_hash") != new_hash:
+            continue
+        # NEW: only dedup if titles are similar; different titles = different notice
+        other_title_norm = _normalize_title(other.get("title", ""))
+        if new_title_norm and other_title_norm:
+            if fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 70:
+                continue  # False-positive hash match (template/default PDF)
+        return other.get("title") or other_iid
     return None
 
 
@@ -2636,10 +2663,10 @@ def discover_site(session, site, scan):
                 ct_lower = content_type.lower()
                 is_pdf_resp = _looks_like_pdf_response(response.content, ct_lower, final_url)
                 is_office_doc = (
-                    "application/vnd.openxmlformats" in ct_lower   # .docx, .xlsx, .pptx
-                    or "application/msword" in ct_lower             # .doc
-                    or "application/vnd.ms-excel" in ct_lower       # .xls
-                    or "application/vnd.ms-powerpoint" in ct_lower  # .ppt
+                    "application/vnd.openxmlformats" in ct_lower
+                    or "application/msword" in ct_lower
+                    or "application/vnd.ms-excel" in ct_lower
+                    or "application/vnd.ms-powerpoint" in ct_lower
                 )
                 if is_pdf_resp:
                     filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
@@ -4720,10 +4747,10 @@ def _run_dedup_self_tests():
         "sent_other_site": {"site_id": "district-b", "status": "sent", "title": "Notice C", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1"},
     }}
     hash_cases = [
-        ({"site_id": "district-a", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1"}, "Notice A", "same-site sent PDF fingerprint detected"),
-        ({"site_id": "district-a", "pdf_hash": "visual-v1:ready", "pdf_hash_kind": "visual-v1"}, None, "ready-only fingerprint does not block sending"),
-        ({"site_id": "district-c", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1"}, None, "cross-district fingerprint does not block sending"),
-        ({"site_id": "district-a", "pdf_hash": "visual-v1:different", "pdf_hash_kind": "visual-v1"}, None, "different fingerprint remains eligible"),
+        ({"site_id": "district-a", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1", "title": "Notice A"}, "Notice A", "same-site sent PDF fingerprint detected"),
+        ({"site_id": "district-a", "pdf_hash": "visual-v1:ready", "pdf_hash_kind": "visual-v1", "title": "Notice B"}, None, "ready-only fingerprint does not block sending"),
+        ({"site_id": "district-c", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1", "title": "Notice A"}, None, "cross-district fingerprint does not block sending"),
+        ({"site_id": "district-a", "pdf_hash": "visual-v1:different", "pdf_hash_kind": "visual-v1", "title": "Notice X"}, None, "different fingerprint remains eligible"),
     ]
     for record, expected, label in hash_cases:
         total += 1
@@ -4928,21 +4955,6 @@ def _run_title_cleanup_self_tests():
 
 
 def _should_fetch_pdf(record):
-    """
-    Only attempt PDF download when the URL looks like an actual file.
-    
-    Case A: URL explicitly ends in .pdf, or has /downloadfile, /getfile, etc.
-            → always fetch (discovery marked is_pdf=True)
-    
-    Case B: Extensionless URL using KNOWN file-serving endpoints
-            (e.g. /writereaddata/xyz, /storage/notices/12345).
-            These usually serve raw files. Downloader verifies content-type;
-            if it happens to return HTML, we return "html_no_pdf_found" safely.
-    
-    Case C: Plain HTML pages like /about/, /library/, /notice/xyz
-            → skip to prevent HTML-embedded-PDF false positives
-            (this fixed the fake [STALE-PDF] bug on faculty profiles).
-    """
     if record.get("pdf_extracted") or record.get("pdf_text"):
         return False
     if int(record.get("pdf_attempts", 0)) >= MAX_PDF_ATTEMPTS:
@@ -5134,18 +5146,18 @@ def main():
         print(f"[FATAL] Configuration/state error: {exc}", file=sys.stderr)
         return 2
 
-    # ===== NEW: Reveal baseline-stuck sites =====
+    # ===== Reveal baseline-stuck sites =====
     for _site in cfg["websites"]:
         _s = site_state(state, _site["id"])
         if not _s.get("baseline_complete", False):
             print(
-                f"[BASELINE-STUCK] {_site['name']}: "
-                f"reason={_s.get('baseline_pending_reason', 'unknown')}, "
-                f"last_error={_s.get('last_error', 'none')}, "
+                f"[BASELINE-STUCK] {_site['name']} | "
+                f"reason={_s.get('baseline_pending_reason', 'unknown')} | "
+                f"last_error={_s.get('last_error', 'none')} | "
                 f"failures={_s.get('consecutive_failures', 0)}",
-                file=sys.stderr
+                file=sys.stderr,
             )
-    # ===== END NEW =====
+    # ===== END =====
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
