@@ -26,6 +26,7 @@ from rapidfuzz.distance import Levenshtein
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+
 def _try_import(*names):
     for name in names:
         try:
@@ -34,10 +35,23 @@ def _try_import(*names):
             continue
     return None
 
+
 fitz = _try_import("pymupdf", "fitz")
+
+# RapidOCR (last fallback)
 _rapidocr_mod = _try_import("rapidocr_onnxruntime", "rapidocr")
 RapidOCR = getattr(_rapidocr_mod, "RapidOCR", None) if _rapidocr_mod is not None else None
 _RAPIDOCR_AVAILABLE = RapidOCR is not None
+
+# PaddleOCR (primary Hindi/Devanagari fallback after Gemini)
+try:
+    from paddleocr import PaddleOCR
+    _PADDLEOCR_AVAILABLE = True
+except ImportError:
+    PaddleOCR = None
+    _PADDLEOCR_AVAILABLE = False
+
+# Tesseract (secondary fallback)
 pytesseract = _try_import("pytesseract")
 _PIL_Image = _try_import("PIL.Image")
 _TESSERACT_AVAILABLE = pytesseract is not None and _PIL_Image is not None
@@ -75,7 +89,7 @@ _RUNTIME_PDF_CACHE_MAX_ITEMS = 20
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
 
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").strip().lower() == "true"
-OCR_DPI = int(os.getenv("OCR_DPI", "150"))
+OCR_DPI = int(os.getenv("OCR_DPI", "250"))
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "200"))
 OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "2"))
 _OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "4"))
@@ -83,6 +97,8 @@ _OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "4"))
 TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").strip().lower() == "true"
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "hin+eng").strip() or "hin+eng"
 TESSERACT_PSM = os.getenv("TESSERACT_PSM", "6").strip()
+
+PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "true").strip().lower() == "true"
 
 GEMINI_PDF_OCR_ENABLED = os.getenv("GEMINI_PDF_OCR_ENABLED", "true").strip().lower() == "true"
 SEND_PDF_ENABLED = os.getenv("SEND_PDF_ENABLED", "true").strip().lower() == "true"
@@ -100,7 +116,7 @@ NOTIFY_LANGUAGE = os.getenv("NOTIFY_LANGUAGE", "both").strip().lower()
 if NOTIFY_LANGUAGE not in {"both", "hi", "en"}:
     NOTIFY_LANGUAGE = "both"
 
-STALE_NOTICE_DAYS = int(os.getenv("STALE_NOTICE_DAYS", "10"))
+STALE_NOTICE_DAYS = int(os.getenv("STALE_NOTICE_DAYS", "15"))
 OLD_YEAR_HINT_YEARS_BACK = int(os.getenv("OLD_YEAR_HINT_YEARS_BACK", "2"))
 ETAG_CHECK_MAX_AGE_DAYS = int(os.getenv("ETAG_CHECK_MAX_AGE_DAYS", "14"))
 
@@ -148,6 +164,7 @@ _DEAD_MODELS: set = set()
 _GEMINI_QUOTA_EXHAUSTED: bool = False
 
 _RAPIDOCR_INSTANCE = None
+_PADDLEOCR_INSTANCE = None
 _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
 _JS_RENDER_COUNT = 0
@@ -214,12 +231,7 @@ _JS_PDF_VIEWER_MARKERS = (
     "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html",
 )
 
-# ============================================================
-# NEW: Central notice-keyword list used by _should_fetch_pdf and _is_non_notice_pdf
-# Fixes Bug 1 (notification not substring of notice) and Bug 4 (missing keywords)
-# ============================================================
 _NOTICE_KEYWORDS = [
-    # English - primary notice/document types
     "notice", "notification", "announcement", "circular", "advertisement", "publicity",
     "exam", "examination", "result", "admit", "form",
     "tender", "quotation", "bid", "rfp", "eoi", "nit",
@@ -239,7 +251,6 @@ _NOTICE_KEYWORDS = [
     "semester", "revaluation", "rechecking",
     "internship",
     "eligibility", "qualification",
-    # Hindi
     "सूचना", "अधिसूचना", "विज्ञापन", "नोटिस",
     "परीक्षा", "परीक्षा कार्यक्रम", "परीक्षा केंद्र",
     "परिणाम", "रिजल्ट",
@@ -259,6 +270,7 @@ _NOTICE_KEYWORDS = [
     "छात्रावास",
 ]
 
+
 def _page_requires_js(html_text):
     if not html_text: return True
     lower = html_text.lower()
@@ -275,7 +287,10 @@ def _page_requires_js(html_text):
     except Exception: return True
     return False
 
-def _has_unrendered_angular_templates(html_text): return bool(re.search(r"\{\{[^}]{1,200}\}\}", html_text or ""))
+
+def _has_unrendered_angular_templates(html_text):
+    return bool(re.search(r"\{\{[^}]{1,200}\}\}", html_text or ""))
+
 
 def _should_render_js(site, html_text, page_url):
     mode = str((site or {}).get("js_render", "auto")).strip().lower()
@@ -285,10 +300,12 @@ def _should_render_js(site, html_text, page_url):
     if fragment.startswith("/") or fragment.startswith("!/"): return True
     return _page_requires_js(html_text)
 
+
 def _html_looks_like_js_pdf_viewer(html_text):
     if not html_text: return False
     lower = html_text.lower()
     return any(m in lower for m in _JS_PDF_VIEWER_MARKERS)
+
 
 def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_selector=None, wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None):
     if not _PLAYWRIGHT_AVAILABLE or not JS_RENDER_ENABLED: return None, url, "playwright_disabled"
@@ -301,7 +318,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
     selector = str(wait_for_selector or JS_WAIT_FOR_SELECTOR_DEFAULT or "").strip()
     try: selector_timeout_ms = max(1000, min(60000, int(selector_timeout_ms or 10000)))
     except (TypeError, ValueError, OverflowError): selector_timeout_ms = 10000
-    
+
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
@@ -350,7 +367,10 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
         print(f"[WARN] Playwright render failed for {url[:80]}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None, url, f"playwright_error:{type(exc).__name__}"
 
-def _is_devanagari_str(text: str) -> bool: return any("\u0900" <= c <= "\u097F" for c in (text or ""))
+
+def _is_devanagari_str(text: str) -> bool:
+    return any("\u0900" <= c <= "\u097F" for c in (text or ""))
+
 
 def _match_signal(text: str, signal: str) -> bool:
     if not text or not signal: return False
@@ -360,6 +380,7 @@ def _match_signal(text: str, signal: str) -> bool:
     if _is_devanagari_str(sig): pattern = (r"(?:^|" + _DEVANAGARI_DELIMS + r")" + re.escape(sig) + r"(?:$|" + _DEVANAGARI_DELIMS + r")")
     else: pattern = _LATIN_LEFT_BOUNDARY + re.escape(sig) + _LATIN_RIGHT_BOUNDARY
     return bool(re.search(pattern, lower))
+
 
 def _count_nav_signals(text: str) -> int:
     if not text: return 0
@@ -376,11 +397,13 @@ def _count_nav_signals(text: str) -> int:
             remaining = new_remaining
     return matched
 
+
 _NOTICE_DOC_URL_HINTS = (
     "/writereaddata/", "/uploadfile/", "/uploads/", "/downloadfile", "/download_file", "/getfile",
     "/showfile", "/viewfile", "/filedownload", "/attachment", "/documents/", "/docs/",
     "/notice/", "/notice_", "/download/",
 )
+
 
 def _is_notice_document_url(url):
     if not url: return False
@@ -391,6 +414,7 @@ def _is_notice_document_url(url):
     except Exception: return False
     return any(hint in path for hint in _NOTICE_DOC_URL_HINTS)
 
+
 def _looks_like_menu_dump(title):
     if not title: return False
     words = title.split()
@@ -398,6 +422,7 @@ def _looks_like_menu_dump(title):
     first_words = " ".join(words[:8]).lower()
     count = sum(1 for sig in _STRICT_EARLY_NAV_SIGNALS if _match_signal(first_words, sig))
     return count >= 2
+
 
 def _is_garbage_title(title):
     if not title: return True
@@ -413,6 +438,7 @@ def _is_garbage_title(title):
     if _is_language_selector(stripped): return True
     return False
 
+
 def _filename_to_title(url):
     try:
         path = unquote(urlparse(url).path or "")
@@ -426,6 +452,7 @@ def _filename_to_title(url):
         if re.match(r"^[\d\s/\-.:()\[\]]+$", name): return ""
         return clean_text(name, 300)
     except Exception: return ""
+
 
 def _strip_nav_prefix(title):
     if not title: return title
@@ -446,6 +473,7 @@ def _strip_nav_prefix(title):
     rest = rest.strip()
     return rest if len(rest) >= 15 else title
 
+
 def _cleanup_menu_dump_title(title, url="", explicit=""):
     if explicit and not _is_generic_title(explicit) and not _is_language_selector(explicit) and not _looks_like_menu_dump(explicit) and not _is_garbage_title(explicit): return clean_text(explicit, 300)
     if url and _is_notice_document_url(url):
@@ -458,6 +486,7 @@ def _cleanup_menu_dump_title(title, url="", explicit=""):
         slug = _title_from_url(url, min_len=8)
         if slug: return slug
     return title
+
 
 def _resolve_title(item):
     explicit = clean_text(item.get("explicit_title") or "", 300)
@@ -477,6 +506,7 @@ def _resolve_title(item):
     if slug: return slug
     return "Notice"
 
+
 def _get_rapidocr():
     global _RAPIDOCR_INSTANCE
     if _RAPIDOCR_INSTANCE is None and _RAPIDOCR_AVAILABLE:
@@ -493,6 +523,56 @@ def _get_rapidocr():
                 return None
     return _RAPIDOCR_INSTANCE
 
+
+def _get_paddleocr():
+    global _PADDLEOCR_INSTANCE
+    if _PADDLEOCR_INSTANCE is None and _PADDLEOCR_AVAILABLE:
+        try:
+            _PADDLEOCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="hi", show_log=False, use_gpu=False)
+            print("[INFO] PaddleOCR (Devanagari) initialized.", file=sys.stderr)
+        except Exception as exc:
+            print(f"[WARN] PaddleOCR init failed: {exc}", file=sys.stderr)
+            return None
+    return _PADDLEOCR_INSTANCE
+
+
+def _extract_pdf_text_paddleocr(content):
+    if not PADDLEOCR_ENABLED or not _PADDLEOCR_AVAILABLE: return ""
+    ocr = _get_paddleocr()
+    if ocr is None: return ""
+    parts = []
+    try:
+        import numpy as np
+        try:
+            import cv2
+            has_cv2 = True
+        except ImportError:
+            has_cv2 = False
+        doc = fitz.open(stream=content, filetype="pdf")
+        pages_to_process = min(len(doc), MAX_PDF_PAGES, _OCR_MAX_PAGES)
+        for page_num in range(pages_to_process):
+            try:
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap(dpi=OCR_DPI)
+                img_bytes = pix.tobytes("png")
+                if has_cv2:
+                    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+                else:
+                    from PIL import Image
+                    img = np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+                result = ocr.ocr(img, cls=True)
+                if result and result[0]:
+                    for line in result[0]:
+                        try: parts.append(line[1][0])
+                        except (IndexError, TypeError): continue
+            except Exception as exc:
+                print(f"[WARN] PaddleOCR page {page_num+1} failed: {exc}", file=sys.stderr)
+        doc.close()
+    except Exception as exc:
+        print(f"[WARN] PaddleOCR PDF processing failed: {exc}", file=sys.stderr)
+    return "\n\n".join(parts)
+
+
 def _cache_put(url, content):
     if url in _RUNTIME_PDF_CACHE: return
     if len(_RUNTIME_PDF_CACHE) >= _RUNTIME_PDF_CACHE_MAX_ITEMS:
@@ -501,6 +581,7 @@ def _cache_put(url, content):
             del _RUNTIME_PDF_CACHE[first_key]
         except (StopIteration, KeyError): pass
     _RUNTIME_PDF_CACHE[url] = content
+
 
 def _load_gemini_keys():
     keys = []
@@ -516,6 +597,7 @@ def _load_gemini_keys():
     add(os.getenv("GEMINI_API_KEY", ""))
     return keys
 
+
 def _get_next_gemini_key():
     global _GEMINI_KEY_INDEX
     with _GEMINI_KEY_LOCK:
@@ -528,8 +610,10 @@ def _get_next_gemini_key():
             if key not in _GEMINI_DEAD_KEYS: return key
     return None
 
+
 def _has_live_gemini_keys():
     with _GEMINI_KEY_LOCK: return any(key not in _GEMINI_DEAD_KEYS for key in _GEMINI_KEYS_POOL)
+
 
 def _mark_gemini_key_dead(key, reason="quota exhausted"):
     if not key: return
@@ -540,6 +624,7 @@ def _mark_gemini_key_dead(key, reason="quota exhausted"):
     try: index = _GEMINI_KEYS_POOL.index(key) + 1
     except ValueError: index = 0
     print(f"[GEMINI] Key #{index} skipped ({reason}); {remaining} remain.", file=sys.stderr)
+
 
 def _gemini_post_with_rotation(endpoint, payload, timeout):
     if not _GEMINI_KEYS_POOL: return None, None, "no_keys"
@@ -575,6 +660,7 @@ def _gemini_post_with_rotation(endpoint, payload, timeout):
             continue
         return response, key, None
     return None, None, last_reason
+
 
 def _discover_models():
     global _MODELS_DISCOVERED, _DYNAMIC_MODELS
@@ -619,6 +705,7 @@ def _discover_models():
         _DYNAMIC_MODELS = list(FALLBACK_MODELS)
     _MODELS_DISCOVERED = True
 
+
 def _pdf_content_fingerprint(content):
     if not content: return ""
     if fitz is not None:
@@ -638,6 +725,7 @@ def _pdf_content_fingerprint(content):
     except Exception: pass
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
+
 def _parse_utc_timestamp(value):
     if not value: return None
     try:
@@ -646,6 +734,7 @@ def _parse_utc_timestamp(value):
         return dt.astimezone(timezone.utc)
     except (TypeError, ValueError, OverflowError): return None
 
+
 def _telegram_retry_due(record, now=None):
     now = now or datetime.now(timezone.utc)
     first_failed = _parse_utc_timestamp(record.get("telegram_first_failed_at"))
@@ -653,12 +742,14 @@ def _telegram_retry_due(record, now=None):
     next_attempt = _parse_utc_timestamp(record.get("telegram_next_attempt_at"))
     return next_attempt is None or next_attempt <= now
 
+
 def _schedule_telegram_retry(record, now=None):
     now = now or datetime.now(timezone.utc)
     if not record.get("telegram_first_failed_at"): record["telegram_first_failed_at"] = now.isoformat()
     attempts = max(1, int(record.get("telegram_attempts", 1) or 1))
     delay_minutes = min(TELEGRAM_RETRY_BASE_MINUTES * (2 ** min(attempts - 1, 8)), TELEGRAM_RETRY_MAX_MINUTES)
     record["telegram_next_attempt_at"] = (now + timedelta(minutes=delay_minutes)).isoformat()
+
 
 MEANINGFUL_FIELDS = {
     "admission_last_date": [r"(?:last date|last date to apply|apply(?:ing)? till|closing date|admission last date|अंतिम तिथि|आवेदन की अंतिम तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
@@ -673,6 +764,7 @@ MEANINGFUL_FIELDS = {
     "eligibility": [r"(?:eligibility|educational qualification|योग्यता|शैक्षणिक योग्यता)\s*[:：-]?\s*([^\n;]{1,120})"],
 }
 
+
 def extract_meaningful_fields(text):
     source = clean_text(text or "", 12000).casefold()
     found = {}
@@ -686,6 +778,7 @@ def extract_meaningful_fields(text):
                     break
     return found
 
+
 def meaningful_change_details(old_text, new_text):
     old_fields = extract_meaningful_fields(old_text)
     new_fields = extract_meaningful_fields(new_text)
@@ -698,6 +791,7 @@ def meaningful_change_details(old_text, new_text):
             if ratio < 78 and Levenshtein.distance(old_norm[:2000], new_norm[:2000]) >= 30:
                 changed["substantive_text"] = {"old": old_norm[:160], "new": new_norm[:160]}
     return changed
+
 
 def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     old_title_norm = re.sub(r"\s+", " ", (old_title or "").casefold()).strip()
@@ -722,6 +816,7 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
         if distance >= 30 and ratio < 78: return True
     return False
 
+
 def baseline_can_complete(scan_success, errors, max_errors=3):
     if isinstance(errors, str): error_count = 1 if errors.strip() else 0
     else:
@@ -730,6 +825,7 @@ def baseline_can_complete(scan_success, errors, max_errors=3):
     try: limit = max(0, min(50, int(max_errors)))
     except (TypeError, ValueError, OverflowError): limit = 3
     return bool(scan_success) and error_count <= limit
+
 
 def add_review_item(state, record, reason, details=None):
     queue = state.setdefault("review_queue", {})
@@ -745,6 +841,7 @@ def add_review_item(state, record, reason, details=None):
         "status": "open", "retry_count": int(previous.get("retry_count", 0)) + (1 if previous else 0),
         "first_seen": previous.get("first_seen", utc_now()), "updated_at": utc_now(),
     }
+
 
 def _check_url_changed(session, url, record, verify_ssl=True):
     try:
@@ -786,6 +883,7 @@ def _check_url_changed(session, url, record, verify_ssl=True):
         return changed, new_etag, new_lm
     except Exception: return False, None, None
 
+
 _NON_NOTICE_URL_PATTERNS = [
     re.compile(r"/page/\d+/?$", re.I), re.compile(r"/page/?$", re.I), re.compile(r"/notice_category(/|$)", re.I),
     re.compile(r"/notice-category(/|$)", re.I), re.compile(r"/document-category(/|$)", re.I), re.compile(r"/document_category(/|$)", re.I),
@@ -824,6 +922,7 @@ _EMPTY_PAGE_PHRASES = ["sorry, no notice matched", "no notice matched this categ
 _TITLE_LABEL_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]\s*$", re.IGNORECASE)
 _TITLE_INLINE_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]\s*(.+?)\s*$", re.IGNORECASE)
 _TITLE_LABEL_STRICT_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]?\s*$", re.IGNORECASE)
+
 
 def _extract_explicit_title(soup):
     def clean_value(value):
@@ -870,6 +969,7 @@ def _extract_explicit_title(soup):
             if value: return value
     return ""
 
+
 def _is_navigation_url(url):
     try:
         parsed = urlparse(url)
@@ -881,6 +981,7 @@ def _is_navigation_url(url):
         if pat.search(target): return True
     return False
 
+
 def _is_archive_url(url):
     try:
         parsed = urlparse(url)
@@ -889,6 +990,7 @@ def _is_archive_url(url):
     for pat in _ARCHIVE_URL_PATTERNS:
         if pat.search(target): return True
     return False
+
 
 def _is_generic_title(title):
     t = re.sub(r"\s+", " ", (title or "").strip().casefold())
@@ -905,6 +1007,7 @@ def _is_generic_title(title):
     if t.isdigit() and len(t) <= 3: return True
     return False
 
+
 def _is_language_selector(title):
     t = (title or "").strip().lower()
     if not t: return False
@@ -915,10 +1018,12 @@ def _is_language_selector(title):
             if p and p in _LANGUAGE_SELECTOR_TITLES and len(t) <= 40: return True
     return False
 
+
 def _is_empty_page_text(html_text):
     if not html_text: return False
     sample = html_text[:8000].lower()
     return any(phrase in sample for phrase in _EMPTY_PAGE_PHRASES)
+
 
 def _title_from_url(url, min_len=8):
     try: path = unquote(urlparse(url).path or "")
@@ -932,7 +1037,9 @@ def _title_from_url(url, min_len=8):
     if _is_generic_title(slug): return ""
     return slug
 
+
 _PDF_URL_HINTS = ("downloadfile", "download_file", "downloadpdf", "download_pdf", "showpdf", "viewpdf", "getpdf", "filedownload", "getfile")
+
 
 def _looks_like_pdf_url(url):
     if not url: return False
@@ -943,6 +1050,7 @@ def _looks_like_pdf_url(url):
     if any(kw in path for kw in _PDF_URL_HINTS): return True
     return False
 
+
 def _looks_like_pdf_response(content, content_type, url=""):
     if not content: return False
     ct = (content_type or "").lower()
@@ -952,6 +1060,7 @@ def _looks_like_pdf_response(content, content_type, url=""):
     if ("download" in ct or "x-download" in ct) and content[:4] == b"%PDF": return True
     if _looks_like_pdf_url(url) and content[:4] == b"%PDF": return True
     return False
+
 
 def _collect_all_pdf_candidates(html_text, base_url, max_candidates=15):
     if not html_text: return []
@@ -1019,9 +1128,11 @@ def _collect_all_pdf_candidates(html_text, base_url, max_candidates=15):
     ranked = sorted(candidates.items(), key=lambda x: -x[1])
     return ranked[:max_candidates]
 
+
 def _find_pdf_link_in_html(html_text, base_url):
     ranked = _collect_all_pdf_candidates(html_text, base_url, max_candidates=1)
     return ranked[0][0] if ranked else None
+
 
 def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None, verify_ssl=True):
     if _visited is None: _visited = set()
@@ -1059,6 +1170,7 @@ def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None,
     if content[:4] == b"%PDF": return content, final_url, "magic_bytes"
     return None, url, f"unsupported:{content_type[:40]}"
 
+
 _MONTH_NAMES = {
     "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3, "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7, "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
     "जनवरी": 1, "फरवरी": 2, "मार्च": 3, "अप्रैल": 4, "मई": 5, "जून": 6, "जुलाई": 7, "अगस्त": 8, "सितंबर": 9, "सितम्बर": 9, "अक्टूबर": 10, "अक्तूबर": 10, "नवंबर": 11, "नवम्बर": 11, "दिसंबर": 12, "दिसम्बर": 12,
@@ -1070,6 +1182,7 @@ _FULL_DATE_PATTERNS = [
     re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-]+(" + _MONTH_REGEX + r")[\s\-,]+(\d{4})\b", re.I),
     re.compile(r"\b(" + _MONTH_REGEX + r")[\s\-]+(\d{1,2})(?:st|nd|rd|th)?[\s\-,]+(\d{4})\b", re.I),
 ]
+
 
 def _extract_full_dates(text):
     if not text: return []
@@ -1090,19 +1203,25 @@ def _extract_full_dates(text):
             except (ValueError, IndexError, TypeError, AttributeError): continue
     return dates
 
+
 _UPLOAD_DATE_TEXT_PATTERNS = [
     re.compile(r"(?:published|posted|uploaded|issued|dated)\s*(?:on|at|:|\-)?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{4})", re.I),
     re.compile(r"(?:published|posted|uploaded|issued|dated)\s*(?:on|at|:|\-)?\s*(\d{1,2}(?:st|nd|rd|th)?\s+(?:" + _MONTH_REGEX + r")\s+\d{4})", re.I),
     re.compile(r"(?:दिनांक|प्रकाशित|जारी|अपलोड|अद्यतन)\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{4})", re.I),
 ]
 
+
 def _extract_explicit_issue_dates(text):
     if not text: return []
     text = str(text).translate(_DEVA_DIGIT_TRANS)
     dates = []
     for pattern in _UPLOAD_DATE_TEXT_PATTERNS:
-        for match in pattern.finditer(text): dates.extend(_extract_full_dates(match.group(1)))
+        for match in pattern.finditer(text):
+            dates.extend(_extract_full_dates(match.group(1)))
+    if not dates:
+        dates.extend(_extract_full_dates(text))
     return sorted(set(dates))
+
 
 def _extract_upload_date(anchor_tag):
     try:
@@ -1129,17 +1248,29 @@ def _extract_upload_date(anchor_tag):
     except Exception: pass
     return None
 
+
 def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
+    """
+    Date-only stale detection based on STALE_NOTICE_DAYS cutoff from now().
+    - Any recent OR future date → SEND (supports "issued 01/10, last date 30/11")
+    - All dates older than cutoff → STALE
+    - No full dates → academic session / year-only fallback
+    - No hardcoded years anywhere
+    """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=STALE_NOTICE_DAYS)
+
     title_text = str(title or "")
     context_text = str(context or "")
     url_text = str(url or "")
-    haystack = f"{title_text} {context_text} {url_text}".strip()
-    full_text = f"{haystack} {pdf_text or ''}".strip()
+    pdf_text_str = str(pdf_text or "")
+    full_text = f"{title_text} {context_text} {url_text} {pdf_text_str}".strip()
     normalized_title = title_text.translate(_DEVA_DIGIT_TRANS)
     normalized_context = context_text.translate(_DEVA_DIGIT_TRANS)
     normalized_full = full_text.translate(_DEVA_DIGIT_TRANS)
+    normalized_pdf_head = pdf_text_str[:500].translate(_DEVA_DIGIT_TRANS)
+
+    # Stage 1: Nav-dump detection
     title_words = normalized_title.split()
     if len(title_words) >= 5:
         first_words = " ".join(title_words[:6]).lower()
@@ -1155,33 +1286,60 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
         compact_social_dump = (len(title_words) <= 8 and nav_count >= 3 and not has_notice_signal)
         if not has_notice_signal and not _is_notice_document_url(url):
             if (mostly_short and (nav_count >= 2 or explicit_nav_dump)) or compact_social_dump: return True
-    title_years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_title)]
+
+    # Stage 2: Full-date check (15-day cutoff, future dates count as fresh)
+    title_dates = _extract_full_dates(normalized_title)
+    head_dates = _extract_full_dates(normalized_pdf_head) if normalized_pdf_head else []
+    body_dates = _extract_full_dates(normalized_full)
+    all_dates = list(set(title_dates + head_dates + body_dates))
+
+    if upload_date is not None:
+        try:
+            if upload_date.tzinfo is None: upload_date = upload_date.replace(tzinfo=timezone.utc)
+            else: upload_date = upload_date.astimezone(timezone.utc)
+            all_dates.append(upload_date)
+        except (AttributeError, ValueError): pass
+
+    if all_dates:
+        max_date = max(all_dates)
+        if max_date >= cutoff:
+            return False
+        print(f"[STALE] All {len(all_dates)} date(s) older than {STALE_NOTICE_DAYS} days; newest={max_date.date()}", file=sys.stderr)
+        return True
+
+    # Stage 3: Academic session (only when no full dates)
     current_year = now.year
     current_academic_start = current_year if now.month >= 7 else current_year - 1
-    current_year_update = bool(re.search(rf"(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र).{{0,50}}{current_year}|{current_year}.{{0,50}}(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र)", f"{normalized_title} {normalized_context}", re.I))
+    current_year_update = bool(re.search(
+        rf"(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र).{{0,50}}{current_year}|{current_year}.{{0,50}}(?:revised|revision|corrigendum|addendum|amended|modified|संशोधित|शुद्धिपत्र)",
+        f"{normalized_title} {normalized_context}", re.I))
     session_pattern = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[-/–—]\s*((?:19|20)\d{2}|\d{2})(?!\d)")
-    admission_session_signal = bool(re.search(r"\b(?:admission|admissions|provisional|application|counselling|counseling|selection\s+list|merit\s+list|ph\.?d\.?|enrollment|enrolment|प्रवेश|आवेदन|चयन\s+सूची|मेरिट\s+सूची)\b", normalized_title, re.I))
+    admission_session_signal = bool(re.search(
+        r"\b(?:admission|admissions|provisional|application|counselling|counseling|selection\s+list|merit\s+list|ph\.?d\.?|enrollment|enrolment|प्रवेश|आवेदन|चयन\s+सूची|मेरिट\s+सूची)\b",
+        normalized_title, re.I))
     if admission_session_signal and not current_year_update:
         for match in session_pattern.finditer(normalized_title):
             session_start = int(match.group(1))
             end_token = match.group(2)
             session_end = int(end_token) if len(end_token) == 4 else (session_start // 100) * 100 + int(end_token)
             if session_end < session_start: session_end += 100
-            if session_start < current_academic_start: return True
-    title_has_old_range = len(title_years) >= 2 and max(title_years) < current_year
-    title_has_very_old_year = bool(title_years) and max(title_years) < current_year - 1
-    if (title_has_old_range or title_has_very_old_year) and not current_year_update: return True
-    issue_dates = _extract_explicit_issue_dates(normalized_full)
-    past_issue_dates = [date for date in issue_dates if date <= now]
-    if past_issue_dates: return max(past_issue_dates) < cutoff
-    if issue_dates: return False
-    if upload_date is not None:
-        if upload_date.tzinfo is None: upload_date = upload_date.replace(tzinfo=timezone.utc)
-        else: upload_date = upload_date.astimezone(timezone.utc)
-        return upload_date < cutoff
+            if session_start < current_academic_start:
+                print(f"[STALE-SESSION] Old session {session_start}-{session_end}", file=sys.stderr)
+                return True
+
+    # Stage 4: Year-only fallback (Dec 31 of max year vs cutoff)
     years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_full)]
-    if years and max(years) < current_year and not current_year_update: return True
+    if years:
+        max_year = max(years)
+        try:
+            latest_possible = datetime(max_year, 12, 31, tzinfo=timezone.utc)
+            if latest_possible < cutoff:
+                print(f"[STALE-YEAR] Latest possible for {max_year} ({latest_possible.date()}) is older than {STALE_NOTICE_DAYS} days", file=sys.stderr)
+                return True
+        except (ValueError, OverflowError): pass
+
     return False
+
 
 def _classify_stale_reason(title, context, url, upload_date=None, pdf_text=None):
     if not _is_stale_notice(title, context, url, upload_date=upload_date, pdf_text=pdf_text): return None
@@ -1191,17 +1349,21 @@ def _classify_stale_reason(title, context, url, upload_date=None, pdf_text=None)
     if nav_count >= 2 and not has_notice_signal: return f"MENU-DUMP(nav={nav_count})"
     return "STALE"
 
+
 def utc_now(): return datetime.now(timezone.utc).isoformat()
+
 
 def clean_text(value, limit=500):
     value = re.sub(r"\s+", " ", value or "").strip()
     return value[:limit]
+
 
 def load_json(path, default):
     try:
         with path.open("r", encoding="utf-8") as f: return json.load(f)
     except FileNotFoundError: return default
     except json.JSONDecodeError as exc: raise RuntimeError(f"Invalid JSON in {path.name}: {exc}") from exc
+
 
 def atomic_save_json(path, data, max_bytes=None):
     tmp = path.with_suffix(path.suffix + ".new")
@@ -1220,11 +1382,13 @@ def atomic_save_json(path, data, max_bytes=None):
         except OSError: pass
         raise
 
+
 def canonical_url(raw):
     raw = (raw or "").strip()
     p = urlparse(raw)
     if not p.scheme or not p.netloc: return raw
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", p.query, ""))
+
 
 def _canonical_spa_url(raw):
     raw = (raw or "").strip()
@@ -1233,6 +1397,7 @@ def _canonical_spa_url(raw):
     fragment = (p.fragment or "").strip()
     keep_fragment = fragment.startswith("/") or fragment.startswith("!/")
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", p.query, fragment if keep_fragment else ""))
+
 
 def canonical_identity_url(raw):
     normalized = _canonical_spa_url(raw)
@@ -1247,11 +1412,15 @@ def canonical_identity_url(raw):
     pairs.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", urlencode(pairs, doseq=True), p.fragment))
 
+
 def same_host(a, b): return urlparse(a).netloc.lower() == urlparse(b).netloc.lower()
+
 
 def is_http_url(url): return urlparse(url).scheme in {"http", "https"}
 
+
 def is_pdf(url): return urlparse(url).path.lower().endswith(".pdf")
+
 
 def make_session():
     session = requests.Session()
@@ -1262,8 +1431,10 @@ def make_session():
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-IN,en;q=0.8,hi;q=0.7", "Cache-Control": "no-cache"})
     return session
 
+
 _SITE_VERIFY_SSL_BY_ID = {}
 _SITE_TIMEOUT_BY_ID = {}
+
 
 def get_config():
     cfg = load_json(CONFIG_FILE, {})
@@ -1346,12 +1517,14 @@ def get_config():
     _SITE_TIMEOUT_BY_ID = {site["id"]: site["request_timeout_seconds"] for site in enabled}
     return cfg
 
+
 def default_state():
     return {
         "version": 31, "initialized": False, "last_run": None, "items": {}, "sites": {}, "review_queue": {},
         "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0},
         "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0},
     }
+
 
 def load_state():
     state = load_json(STATE_FILE, default_state())
@@ -1381,18 +1554,22 @@ def load_state():
     state["version"] = 31
     return state
 
+
 def site_state(state, site_id):
     s = state.setdefault("sites", {}).setdefault(site_id, {})
     s.setdefault("baseline_complete", False); s.setdefault("consecutive_failures", 0); s.setdefault("total_failures", 0); s.setdefault("last_success", None); s.setdefault("last_error", None); s.setdefault("last_error_at", None); s.setdefault("last_item_count", 0); s.setdefault("alert_active", False); s.setdefault("last_alert_at", None); s.setdefault("last_recovery_at", None)
     return s
 
+
 def mark_site_success(state, site_id, count):
     s = site_state(state, site_id)
     s["consecutive_failures"] = 0; s["last_success"] = utc_now(); s["last_error"] = None; s["last_error_at"] = None; s["last_item_count"] = count
 
+
 def mark_site_failure(state, site_id, error):
     s = site_state(state, site_id)
     s["consecutive_failures"] += 1; s["total_failures"] += 1; s["last_error"] = clean_text(error, 500); s["last_error_at"] = utc_now()
+
 
 def _check_and_send_site_alerts(state, cfg, token, chat_id, threshold=3, cooldown_hours=6):
     now = datetime.now(timezone.utc)
@@ -1432,9 +1609,11 @@ def _check_and_send_site_alerts(state, cfg, token, chat_id, threshold=3, cooldow
                 st = site_state(state, sid); st["alert_active"] = False; st["last_recovery_at"] = utc_now()
         else: print(f"[WARN] Site recovery alert not delivered: {detail}", file=sys.stderr)
 
+
 def local_score(title, url, context, keywords):
     text = f"{title} {url} {context}".lower()
     return sum(1 for kw in keywords if kw and kw in text)
+
 
 def pending_priority(record, keywords, now=None):
     now = now or datetime.now(timezone.utc)
@@ -1448,11 +1627,13 @@ def pending_priority(record, keywords, now=None):
     age_bonus = min(age_days, 30.0)
     return urgency + score + age_bonus, age_days
 
+
 _PRECLASS_STRONG = (
     "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "result", "notice", "notification", "examination", "exam form", "exam schedule", "exam programme", "marksheet", "merit", "advertisement", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परीक्षा फॉर्म",
 )
 _PRECLASS_NAV_ONLY = ("photo gallery", "video gallery", "site map", "web policies", "screen reader", "feedback", "anti-ragging", "grievance cell")
 _DEFAULT_EXCLUDED_TITLE_SIGNALS = ("gst return", "income tax", "annual report", "balance sheet", "minutes of meeting", "right to information", "rti application")
+
 
 def _matched_excluded_title_signal(title, signals=None):
     text = re.sub(r"\s+", " ", str(title or "").casefold()).strip()
@@ -1463,15 +1644,13 @@ def _matched_excluded_title_signal(title, signals=None):
         if re.search(pattern, text, flags=re.UNICODE): return signal
     return ""
 
+
 def _keyword_pre_classify(record, excluded_signals=None):
     if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
 
-    # Bug 3 fix: exclusion check uses TITLE ONLY (not pdf_text) so tender notices with
-    # words like "annual report" inside their body are not wrongly excluded.
     title_for_exclusion = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
     if _matched_excluded_title_signal(title_for_exclusion, excluded_signals): return False
 
-    # Combined title (with pdf_text prefix) for further classification checks
     title = " ".join((record.get("explicit_title") or "", record.get("title") or "", (record.get("pdf_text") or "")[:500])).casefold()
 
     if _is_generic_title(title): return False
@@ -1511,11 +1690,14 @@ def _keyword_pre_classify(record, excluded_signals=None):
     if title_is_nav and not has_notice_signal and not _is_notice_document_url(url): return False
     return None
 
+
 def item_id(site_id, url, title="", context=""):
     raw = f"{site_id}|{canonical_identity_url(url)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
+
 def _normalize_title(title): return re.sub(r"[^\w\s]", " ", (title or "").lower()).strip()
+
 
 def build_site_index(state):
     index = {}
@@ -1530,12 +1712,14 @@ def build_site_index(state):
     for sid, rows in permanent.items(): index.setdefault(sid, []).extend(rows)
     return index
 
+
 def find_url_match(site_items, url):
     target = canonical_identity_url(url)
     if not target: return None
     for iid, _title, existing_url in site_items or []:
         if canonical_identity_url(existing_url) == target: return iid
     return None
+
 
 def _duplicate_alias_slug(url):
     try:
@@ -1545,6 +1729,7 @@ def _duplicate_alias_slug(url):
         slug = re.sub(r"(?:[-_ ](?:copy|duplicate|duplicated|download|downloaded|final-copy))+$", "", slug)
         return re.sub(r"[^a-z0-9]+", "", slug)
     except Exception: return ""
+
 
 def find_fuzzy_match(site_items, title, url):
     if not site_items or not title: return None
@@ -1557,6 +1742,7 @@ def find_fuzzy_match(site_items, title, url):
         old_title = _normalize_title(existing_title)
         if len(old_title) >= 12 and fuzz.token_sort_ratio(new_title, old_title) >= FUZZY_CROSS_PATH_THRESHOLD: return iid
     return None
+
 
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
@@ -1576,13 +1762,14 @@ def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
         return other.get("title") or other_iid
     return None
 
+
 def extract_candidates(html_text, page_url, site, scan):
     soup = BeautifulSoup(html_text, "html.parser")
     for tag in soup(["script", "style", "noscript", "svg", "template"]): tag.decompose()
     keywords = list(dict.fromkeys(scan["keywords"] + site.get("keywords", [])))
     out = []
     seen = set()
-    
+
     for a in soup.find_all("a", href=True):
         href = _canonical_spa_url(urljoin(page_url, a.get("href", "")))
         if not is_http_url(href) or not same_host(page_url, href): continue
@@ -1602,7 +1789,7 @@ def extract_candidates(html_text, page_url, site, scan):
                 if len(part) >= 8 and not _is_generic_title(part) and not _is_language_selector(part):
                     context_title = part
                     break
-            
+
             if not context_title or _is_generic_title(context_title):
                 walker = parent
                 for _ in range(3):
@@ -1613,12 +1800,12 @@ def extract_candidates(html_text, page_url, site, scan):
                         h = walker.find(htag)
                         if h:
                             htext = clean_text(h.get_text(" ", strip=True), 300)
-                            if (len(htext) >= 5 and not _is_generic_title(htext) 
+                            if (len(htext) >= 5 and not _is_generic_title(htext)
                                 and not _looks_like_menu_dump(htext) and not _is_garbage_title(htext)):
                                 context_title = htext
                                 break
                     if context_title: break
-            
+
             title = context_title or _title_from_url(href, min_len=5) or ""
             if not title or _is_generic_title(title): continue
 
@@ -1679,6 +1866,7 @@ def extract_candidates(html_text, page_url, site, scan):
 
     return out
 
+
 def discover_from_sitemap(session, base_url, scan):
     if not scan.get("sitemap_enabled"): return []
     parsed = urlparse(base_url)
@@ -1696,6 +1884,7 @@ def discover_from_sitemap(session, base_url, scan):
                 if any(kw in url.lower() for kw in scan["discovery_keywords"] if kw): urls.append(url)
         return urls[: scan["max_discovery_pages_per_site"] * 3]
     except Exception: return []
+
 
 def _robots_allowed(session, url, timeout):
     parsed = urlparse(url)
@@ -1715,6 +1904,7 @@ def _robots_allowed(session, url, timeout):
     if parser is None: return True
     try: return parser.can_fetch(USER_AGENT, url)
     except Exception: return True
+
 
 def discover_site(session, site, scan):
     base_url = site["url"]
@@ -1874,7 +2064,9 @@ def discover_site(session, site, scan):
     values.sort(key=lambda x: (-x["score"], x["title"].lower()))
     return (site["id"], values[: scan["max_items_per_site"]], errors, successful_pages > 0)
 
+
 def scan_site(site, scan): return discover_site(make_session(), site, scan)
+
 
 def _extract_pdf_text_plumber(content):
     parts = []
@@ -1904,6 +2096,7 @@ def _extract_pdf_text_plumber(content):
     except Exception as exc: print(f"[WARN] pdfplumber open failed: {exc}", file=sys.stderr)
     return "\n\n".join(parts)
 
+
 def _extract_pdf_text_rapidocr(content):
     if not OCR_ENABLED or not _RAPIDOCR_AVAILABLE: return ""
     ocr = _get_rapidocr()
@@ -1927,6 +2120,7 @@ def _extract_pdf_text_rapidocr(content):
     result_text = "\n\n".join(parts)
     if result_text and _text_looks_garbage(result_text): return ""
     return result_text
+
 
 def _extract_pdf_text_tesseract(content):
     global _TESSERACT_WARNED
@@ -1959,6 +2153,7 @@ def _extract_pdf_text_tesseract(content):
     if result_text and _text_looks_garbage(result_text): return ""
     return result_text
 
+
 def _extract_with_gemini_pdf(pdf_bytes):
     global _GEMINI_QUOTA_EXHAUSTED
     if not GEMINI_PDF_OCR_ENABLED or not _GEMINI_KEYS_POOL: return ""
@@ -1966,7 +2161,7 @@ def _extract_with_gemini_pdf(pdf_bytes):
     if len(pdf_bytes) > MAX_GEMINI_PDF_BYTES: return ""
     try:
         pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-        prompt = ("Extract ALL text from this university notice/exam document. May be in Hindi, English, or both. May contain tables. Return extracted text verbatim, preserving structure. Do NOT summarize. Do NOT invent. Just extract the text.")
+        prompt = ("Extract ALL text from this university notice/exam document. May be in Hindi, English, or both. May contain tables. Return extracted text verbatim, preserving structure. Do NOT summarize. Do NOT invent. Just extract the text. Preserve every date and Devanagari character exactly.")
         payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "application/pdf", "data": pdf_b64}}]}], "generationConfig": {"temperature": 0.0, "maxOutputTokens": 16384}}
         for model in _DYNAMIC_MODELS:
             if model in _DEAD_MODELS: continue
@@ -1994,6 +2189,7 @@ def _extract_with_gemini_pdf(pdf_bytes):
     except Exception as exc: print(f"[WARN] Gemini PDF OCR failed: {type(exc).__name__}", file=sys.stderr)
     return ""
 
+
 def _text_looks_thin(text):
     stripped = (text or "").strip()
     if len(stripped) < OCR_MIN_TEXT_CHARS: return True
@@ -2006,6 +2202,7 @@ def _text_looks_thin(text):
         most_common_count = char_counts.most_common(1)[0][1]
         if most_common_count > len(stripped) * 0.5: return True
     return False
+
 
 def _text_looks_garbage(text):
     if not text: return True
@@ -2026,18 +2223,20 @@ def _text_looks_garbage(text):
     if re.search(r"[bcdfghjklmnpqrstvwxz]{5,}", stripped, re.I): return True
     return False
 
+
 _TITLE_KEYWORDS = (
     "निविदा", "विज्ञापन", "सूचना", "नोटिस", "भर्ती", "परीक्षा",
     "परिणाम", "आवेदन", "रिक्त", "पद", "नियुक्ति", "चयन", "शुद्धिपत्र",
     "corrigendum", "amendment", "notice", "tender", "advertisement",
     "recruitment", "vacancy", "result", "notification", "circular",
-    "admission", "exam", "revaluation", "migration", "scholarship", 
-    "fee", "syllabus", "timetable", "counselling", "placement", 
-    "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र", 
+    "admission", "exam", "revaluation", "migration", "scholarship",
+    "fee", "syllabus", "timetable", "counselling", "placement",
+    "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र",
     "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क"
 )
 
 _BOILERPLATE_HINTS = ("पता:", "address:", "फोन", "phone", "email", "e-mail", "website", "वेबसाइट", "दूरभाष", "fax", "फैक्स")
+
 
 def _score_pdf_title_line(line, index):
     if not line: return -1
@@ -2055,6 +2254,7 @@ def _score_pdf_title_line(line, index):
     if any(bad in low for bad in _BOILERPLATE_HINTS): score -= 60
     score += max(0, 10 - index)
     return score
+
 
 def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
     if not raw_pdf_text: return fallback_title, ""
@@ -2086,9 +2286,16 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
                 break
     return better_title, summary
 
+
 def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
+    """
+    OCR pipeline: pdfplumber → Gemini → PaddleOCR → Tesseract → RapidOCR
+    Order: Gemini first (best quality), then Paddle (best free Devanagari),
+    then Tesseract, then RapidOCR as last resort.
+    """
     global _RUNTIME_PDF_CACHE
-    if pdf_url in _RUNTIME_PDF_CACHE: content = _RUNTIME_PDF_CACHE[pdf_url]
+    if pdf_url in _RUNTIME_PDF_CACHE:
+        content = _RUNTIME_PDF_CACHE[pdf_url]
     else:
         try:
             session = make_session()
@@ -2100,27 +2307,53 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
         except Exception as exc:
             print(f"[WARN] PDF download failed for {pdf_url}: {exc}", file=sys.stderr)
             return None, "", False, "download_error", ""
+
     raw_text = _extract_pdf_text_plumber(content)
     extraction_method = "plumber"
+
     if _text_looks_thin(raw_text):
-        gemini_text = _extract_with_gemini_pdf(content)
-        if gemini_text and len(gemini_text.strip()) > len(raw_text.strip()):
-            raw_text = f"{raw_text}\n\n--- GEMINI OCR ---\n\n{gemini_text}" if raw_text.strip() else gemini_text
-            extraction_method = "gemini"
-        else:
-            if OCR_ENABLED and _RAPIDOCR_AVAILABLE:
-                rocr_text = _extract_pdf_text_rapidocr(content)
-                if rocr_text and len(rocr_text.strip()) > len(raw_text.strip()):
-                    raw_text = f"{raw_text}\n\n--- RAPIDOCR ---\n\n{rocr_text}" if raw_text.strip() else rocr_text
-                    extraction_method = "rapidocr"
-            if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE:
-                tess_text = _extract_pdf_text_tesseract(content)
-                if tess_text and len(tess_text.strip()) > len(raw_text.strip()):
-                    raw_text = f"{raw_text}\n\n--- TESSERACT OCR ---\n\n{tess_text}" if raw_text.strip() else tess_text
-                    extraction_method = "tesseract"
+        print(f"[INFO] PDF thin ({len(raw_text)} chars). Starting OCR pipeline...", file=sys.stderr)
+
+        # 1. GEMINI (Primary — best quality, free tier)
+        if GEMINI_PDF_OCR_ENABLED and not _GEMINI_QUOTA_EXHAUSTED:
+            print("[OCR] Trying Gemini...", file=sys.stderr)
+            gemini_text = _extract_with_gemini_pdf(content)
+            if gemini_text and not _text_looks_garbage(gemini_text) and len(gemini_text.strip()) > len(raw_text.strip()):
+                raw_text = f"{raw_text}\n\n--- GEMINI OCR ---\n\n{gemini_text}" if raw_text.strip() else gemini_text
+                extraction_method = "gemini"
+                print(f"[INFO] Gemini OCR succeeded ({len(gemini_text)} chars)", file=sys.stderr)
+
+        # 2. PADDLEOCR (Primary free fallback — best Devanagari accuracy)
+        if extraction_method == "plumber" and PADDLEOCR_ENABLED and _PADDLEOCR_AVAILABLE:
+            print("[OCR] Trying PaddleOCR (Devanagari)...", file=sys.stderr)
+            paddle_text = _extract_pdf_text_paddleocr(content)
+            if paddle_text and not _text_looks_garbage(paddle_text) and len(paddle_text.strip()) > len(raw_text.strip()):
+                raw_text = f"{raw_text}\n\n--- PADDLEOCR ---\n\n{paddle_text}" if raw_text.strip() else paddle_text
+                extraction_method = "paddleocr"
+                print(f"[INFO] PaddleOCR succeeded ({len(paddle_text)} chars)", file=sys.stderr)
+
+        # 3. TESSERACT (fallback)
+        if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE:
+            print("[OCR] Trying Tesseract...", file=sys.stderr)
+            tess_text = _extract_pdf_text_tesseract(content)
+            if tess_text and not _text_looks_garbage(tess_text) and len(tess_text.strip()) > len(raw_text.strip()):
+                raw_text = f"{raw_text}\n\n--- TESSERACT ---\n\n{tess_text}" if raw_text.strip() else tess_text
+                extraction_method = "tesseract"
+                print(f"[INFO] Tesseract succeeded ({len(tess_text)} chars)", file=sys.stderr)
+
+        # 4. RAPIDOCR (last resort)
+        if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE:
+            print("[OCR] Trying RapidOCR...", file=sys.stderr)
+            rocr_text = _extract_pdf_text_rapidocr(content)
+            if rocr_text and not _text_looks_garbage(rocr_text) and len(rocr_text.strip()) > len(raw_text.strip()):
+                raw_text = f"{raw_text}\n\n--- RAPIDOCR ---\n\n{rocr_text}" if raw_text.strip() else rocr_text
+                extraction_method = "rapidocr"
+                print(f"[INFO] RapidOCR succeeded ({len(rocr_text)} chars)", file=sys.stderr)
+
     cleaned = clean_text(raw_text, MAX_PDF_TEXT_CHARS)
     raw_for_title = raw_text[:MAX_PDF_RAW_TEXT_CHARS]
     return (content, cleaned, extraction_method != "plumber", extraction_method, raw_for_title)
+
 
 def keyword_fallback(items):
     result = {}
@@ -2154,6 +2387,7 @@ def keyword_fallback(items):
             "unverified": not keyword_match, "confidence": "high" if keyword_match else "low", "pre_classified": False,
         }
     return result
+
 
 def _build_prompt(prompt_items):
     return (
@@ -2191,7 +2425,9 @@ def _build_prompt(prompt_items):
         + json.dumps(prompt_items, ensure_ascii=False)
     )
 
+
 def _normalize_label(label): return re.sub(r"[^\w\s]", "", (label or "").lower()).strip()
+
 
 def _clean_extra_details(raw):
     if not isinstance(raw, list): return []
@@ -2211,6 +2447,7 @@ def _clean_extra_details(raw):
         seen_labels.add(key)
         out.append({"label": label, "value": value})
     return out
+
 
 def _parse_gemini_response(text, item_count):
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
@@ -2285,6 +2522,7 @@ def _parse_gemini_response(text, item_count):
     if not result: raise RuntimeError("Gemini returned no usable classifications")
     return result
 
+
 def _extract_gemini_text(data):
     candidates = None
     if isinstance(data, dict): candidates = data.get("candidates")
@@ -2306,6 +2544,7 @@ def _extract_gemini_text(data):
                 t = part.get("text")
                 if isinstance(t, str) and t.strip(): texts.append(t)
     return "".join(texts).strip()
+
 
 def gemini_classify(items, api_key, model, timeout):
     if not items: return {}
@@ -2339,6 +2578,7 @@ def gemini_classify(items, api_key, model, timeout):
             if attempt < 2: time.sleep(min(10, 2 ** attempt))
     raise RuntimeError(last_error)
 
+
 def gemini_classify_with_fallback(items, api_key, timeout):
     global _GEMINI_QUOTA_EXHAUSTED
     if _GEMINI_QUOTA_EXHAUSTED or not _has_live_gemini_keys():
@@ -2364,11 +2604,14 @@ def gemini_classify_with_fallback(items, api_key, timeout):
     print("[WARN] Gemini classification unavailable. Using keyword fallback.", file=sys.stderr)
     return keyword_fallback(items)
 
+
 def telegram_request(method, token, payload, timeout=20): return requests.post(f"https://api.telegram.org/bot{token}/{method}", json=payload, timeout=timeout)
+
 
 def validate_telegram_token(token):
     response = telegram_request("getMe", token, {}, timeout=15)
     if not response.ok: raise RuntimeError(f"Telegram bot token invalid: HTTP {response.status_code}: {clean_text(response.text, 300)}")
+
 
 def send_telegram(token, chat_id, text):
     for attempt in range(3):
@@ -2396,6 +2639,7 @@ def send_telegram(token, chat_id, text):
                 continue
             return (False, False, f"Telegram network error: {exc}")
     return (False, False, "Telegram send failed")
+
 
 def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
     for attempt in range(3):
@@ -2426,6 +2670,7 @@ def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
             return (False, False, f"Telegram network error: {exc}")
     return (False, False, "Telegram send document failed")
 
+
 def _safe_filename(url, default="notice.pdf"):
     try:
         parsed = urlparse(url)
@@ -2443,6 +2688,7 @@ def _safe_filename(url, default="notice.pdf"):
     except Exception: pass
     return default
 
+
 def _build_pdf_caption(full_message, classification):
     if not classification: return full_message[:TELEGRAM_CAPTION_LIMIT]
     priority_keys = [("last_date", "Last Date"), ("submission_last_date", "Submission Last"), ("application_start_date", "App Starts"), ("apply_start_date", "App Starts"), ("exam_date", "Exam Date"), ("result_date", "Result Date"), ("total_posts", "Total Posts"), ("application_fee", "Fee"), ("pay_scale", "Pay")]
@@ -2459,6 +2705,7 @@ def _build_pdf_caption(full_message, classification):
         if last_nl > available * 0.7: caption = caption[:last_nl]
         return caption.rstrip() + priority_block
     return full_message[:TELEGRAM_CAPTION_LIMIT]
+
 
 def send_notification_with_pdf(token, chat_id, record, full_message):
     pdf_url = record.get("url", "")
@@ -2485,19 +2732,23 @@ def send_notification_with_pdf(token, chat_id, record, full_message):
         caption = caption.rstrip()
     return send_telegram_document(token, chat_id, pdf_bytes, filename, caption=caption)
 
+
 CATEGORY_EMOJI = {
     "admission": "🎓", "result": "📊", "admit_card": "🎫", "answer_key": "🔑", "exam_schedule": "📅", "revaluation": "🔄", "migration_certificate": "📜", "fee_structure": "💳", "academic_calendar": "🗓️", "syllabus": "📚", "timetable": "⏰", "scholarship": "🎯", "placement": "💼", "tender": "📑", "vacancy": "💼", "notice": "📌", "other": "📎",
 }
+
 
 def _safe_str(value, limit=300):
     if value is None: return None
     text = clean_text(str(value), limit)
     return text or None
 
+
 def _is_devanagari(s):
     if not s: return False
     dev_count = sum(1 for c in s if "\u0900" <= c <= "\u097F")
     return dev_count > len(s) * 0.3
+
 
 _LABELS_HI = {
     "reference_number": "संदर्भ संख्या", "issuing_authority": "जारीकर्ता प्राधिकरण", "issuing_date": "जारी तारीख़", "contact_person": "संपर्क व्यक्ति", "contact_number": "संपर्क नंबर", "email": "ईमेल", "helpline_number": "हेल्पलाइन नंबर", "official_address": "कार्यालय पता", "important_instructions": "ज़रूरी निर्देश", "course_name": "कोर्स", "course_level": "कोर्स स्तर", "session": "सत्र", "admission_mode": "प्रवेश मोड", "entrance_exam_name": "प्रवेश परीक्षा", "eligibility": "योग्यता", "eligibility_marks": "योग्यता मार्क्स", "age_criteria": "उम्र मानदंड", "application_fee": "आवेदन शुल्क", "fee_structure": "शुल्क संरचना", "total_seats": "कुल सीटें", "reservation_details": "आरक्षण विवरण", "apply_start_date": "आवेदन शुरू", "last_date": "अंतिम तिथि", "counselling_date": "काउंसलिंग तिथि", "apply_link": "ऑनलाइन आवेदन", "prospectus_link": "प्रॉस्पेक्टस", "documents_required": "आवश्यक दस्तावेज़", "hostel_available": "हॉस्टल उपलब्ध", "result_for": "परिणाम किसका", "exam_name": "परीक्षा", "semester": "सेमेस्टर", "result_date": "परिणाम तिथि", "result_link": "परिणाम देखें", "result_type": "परिणाम प्रकार", "merit_list_link": "मेरिट लिस्ट", "cutoff_marks": "कटऑफ़ मार्क्स", "total_selected": "कुल चयनित", "next_stage": "अगला चरण", "next_stage_date": "अगले चरण की तिथि", "rechecking_last_date": "रीचेकिंग अंतिम तिथि", "rechecking_link": "रीचेकिंग लिंक", "rechecking_fee": "रीचेकिंग शुल्क", "exam_date": "परीक्षा तिथि", "exam_time": "परीक्षा समय", "exam_duration": "परीक्षा अवधि", "exam_center": "परीक्षा केंद्र", "reporting_time": "रिपोर्टिंग समय", "download_start_date": "डाउनलोड शुरू", "download_last_date": "डाउनलोड अंतिम", "admit_card_link": "एडमिट कार्ड डाउनलोड", "instructions": "निर्देश", "total_questions": "कुल प्रश्न", "answer_key_link": "उत्तर कुंजी देखें", "objection_start_date": "आपत्ति शुरू", "objection_last_date": "आपत्ति अंतिम", "objection_fee": "आपत्ति शुल्क", "per_question_fee": "प्रति प्रश्न शुल्क", "objection_mode": "आपत्ति मोड", "objection_address": "आपत्ति पता", "payment_mode": "भुगतान मोड", "exam_start_date": "परीक्षा शुरू", "exam_end_date": "परीक्षा समाप्त", "timetable_link": "टाइम टेबल देखें", "subject_list": "विषय सूची", "paper_code": "पेपर कोड", "practical_dates": "प्रैक्टिकल तिथियाँ", "viva_dates": "वाइवा तिथियाँ", "revaluation_start_date": "पुनर्मूल्यांकन शुरू", "revaluation_last_date": "पुनर्मूल्यांकन अंतिम", "revaluation_fee": "पुनर्मूल्यांकन शुल्क", "revaluation_mode": "पुनर्मूल्यांकन मोड", "certificate_type": "प्रमाण पत्र प्रकार", "processing_time": "प्रोसेसिंग समय", "fee_type": "शुल्क प्रकार", "amount": "राशि", "late_fee": "विलंब शुल्क", "payment_link": "भुगतान लिंक", "event_type": "कार्यक्रम प्रकार", "event_date": "कार्यक्रम तिथि", "event_description": "विवरण", "calendar_link": "कैलेंडर देखें", "syllabus_link": "पाठ्यक्रम देखें", "effective_from": "प्रभावी तिथि से", "scheme_name": "योजना", "scholarship_amount": "छात्रवृत्ति राशि", "applicable_category": "किस श्रेणी के लिए", "income_limit": "आय सीमा", "apply_mode": "आवेदन मोड", "portal_name": "पोर्टल", "company_name": "कंपनी", "job_role": "जॉब रोल", "package": "पैकेज", "location": "स्थान", "drive_date": "ड्राइव तिथि", "tender_no": "निविदा संख्या", "tender_type": "निविदा प्रकार", "work_description": "कार्य विवरण", "estimated_cost": "अनुमानित लागत", "emd_amount": "EMD राशि", "tender_fee": "निविदा शुल्क", "submission_last_date": "जमा अंतिम तिथि", "opening_date": "खोलने की तिथि", "tender_document_link": "निविदा दस्तावेज़", "eligibility_criteria": "पात्रता मानदंड", "post_name": "पद का नाम", "total_posts": "कुल पद", "post_breakdown": "पद विवरण", "qualification": "योग्यता", "age_limit": "उम्र सीमा", "pay_scale": "वेतन", "advertisement_no": "विज्ञापन संख्या", "selection_process": "चयन प्रक्रिया", "experience_required": "अनुभव आवश्यक", "posting_location": "पोस्टिंग स्थान", "interview_date": "इंटरव्यू तिथि", "venue": "स्थान", "subject": "विषय", "notice_type": "सूचना प्रकार", "applicable_to": "किस पर लागू", "action_required": "क्या करना है", "action_deadline": "अंतिम तिथि", "effective_date": "प्रभावी तिथि", "supersedes": "किसे रद्द करता है", "order_link": "आदेश देखें", "full_content": "पूरा विवरण", "other_details": "अन्य जानकारी", "read_full": "पूरी सूचना देखें",
@@ -2512,6 +2763,7 @@ _CATEGORY_NAMES_EN = {"admission": "Admission", "result": "Result", "admit_card"
 _DISCLAIMER_HI = "⚠️ एक बार ऑफिशियल नोटिफिकेशन ज़रूर पढ़ें — सभी डिटेल्स खुद कन्फर्म कर लें।"
 _DISCLAIMER_EN = "⚠️ Please read the official notification once to confirm all details."
 
+
 def _labels(key):
     if NOTIFY_LANGUAGE == "hi": return _LABELS_HI.get(key, _LABELS_EN.get(key, key))
     if NOTIFY_LANGUAGE == "en": return _LABELS_EN.get(key, key)
@@ -2519,6 +2771,7 @@ def _labels(key):
     en = _LABELS_EN.get(key, key)
     if hi == en: return hi
     return f"{hi} / {en}"
+
 
 def _category_name(category):
     if NOTIFY_LANGUAGE == "hi": return _CATEGORY_NAMES_HI.get(category, category)
@@ -2528,17 +2781,21 @@ def _category_name(category):
     if hi == en: return hi
     return f"{hi} / {en}"
 
+
 def _disclaimer_block():
     lines = ["", "━━━━━━━━━━━━━━━"]
     if NOTIFY_LANGUAGE in ("hi", "both"): lines.append(f"<i>{html.escape(_DISCLAIMER_HI)}</i>")
     if NOTIFY_LANGUAGE in ("en", "both"): lines.append(f"<i>{html.escape(_DISCLAIMER_EN)}</i>")
     return lines
 
+
 def _line(lines, emoji, label, value):
     if value: lines.append(f"{emoji} <b>{_labels(label)}:</b> {html.escape(str(value))}")
 
+
 def _link_line(lines, emoji, label, url):
     if url: lines.append(f'{emoji} <a href="{html.escape(url, quote=True)}">{html.escape(_labels(label))}</a>')
+
 
 def _format_extra_details(lines, c):
     details = c.get("extra_details") or []
@@ -2550,47 +2807,62 @@ def _format_extra_details(lines, c):
         value = _safe_str(d.get("value"), 300)
         if label and value: lines.append(f"   • <b>{html.escape(label)}:</b> {html.escape(value)}")
 
+
 def _format_admission(lines, c):
     _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📊", "course_level", _safe_str(c.get("course_level"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📋", "admission_mode", _safe_str(c.get("admission_mode"))); _line(lines, "📝", "entrance_exam_name", _safe_str(c.get("entrance_exam_name"))); _line(lines, "📊", "total_seats", _safe_str(c.get("total_seats"))); _line(lines, "✅", "eligibility", _safe_str(c.get("eligibility"))); _line(lines, "📋", "eligibility_marks", _safe_str(c.get("eligibility_marks"))); _line(lines, "🎂", "age_criteria", _safe_str(c.get("age_criteria"))); _line(lines, "💳", "application_fee", _safe_str(c.get("application_fee"))); _line(lines, "💰", "fee_structure", _safe_str(c.get("fee_structure"))); _line(lines, "📋", "reservation_details", _safe_str(c.get("reservation_details"))); _line(lines, "📋", "hostel_available", _safe_str(c.get("hostel_available"))); _line(lines, "📋", "documents_required", _safe_str(c.get("documents_required"))); _line(lines, "📅", "apply_start_date", _safe_str(c.get("apply_start_date"))); _line(lines, "📅", "last_date", _safe_str(c.get("last_date"))); _line(lines, "🎯", "counselling_date", _safe_str(c.get("counselling_date"))); _link_line(lines, "📄", "prospectus_link", _safe_str(c.get("prospectus_link"), 500)); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_result(lines, c):
     _line(lines, "📝", "result_for", _safe_str(c.get("result_for"))); _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "📋", "result_type", _safe_str(c.get("result_type"))); _line(lines, "📅", "result_date", _safe_str(c.get("result_date"))); _line(lines, "📊", "total_selected", _safe_str(c.get("total_selected"))); _line(lines, "📋", "cutoff_marks", _safe_str(c.get("cutoff_marks"))); _link_line(lines, "📄", "result_link", _safe_str(c.get("result_link"), 500)); _link_line(lines, "📄", "merit_list_link", _safe_str(c.get("merit_list_link"), 500)); _line(lines, "📋", "next_stage", _safe_str(c.get("next_stage"))); _line(lines, "📅", "next_stage_date", _safe_str(c.get("next_stage_date"))); _line(lines, "🔄", "rechecking_last_date", _safe_str(c.get("rechecking_last_date"))); _line(lines, "💳", "rechecking_fee", _safe_str(c.get("rechecking_fee"))); _link_line(lines, "🔗", "rechecking_link", _safe_str(c.get("rechecking_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_admit_card(lines, c):
     _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "📅", "exam_date", _safe_str(c.get("exam_date"))); _line(lines, "⏰", "exam_time", _safe_str(c.get("exam_time"))); _line(lines, "⏱️", "exam_duration", _safe_str(c.get("exam_duration"))); _line(lines, "📍", "exam_center", _safe_str(c.get("exam_center"))); _line(lines, "⏰", "reporting_time", _safe_str(c.get("reporting_time"))); _line(lines, "⬇️", "download_start_date", _safe_str(c.get("download_start_date"))); _line(lines, "📅", "download_last_date", _safe_str(c.get("download_last_date"))); _line(lines, "📋", "instructions", _safe_str(c.get("instructions"))); _line(lines, "📞", "helpline_number", _safe_str(c.get("helpline_number"))); _link_line(lines, "🎫", "admit_card_link", _safe_str(c.get("admit_card_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_answer_key(lines, c):
     _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📅", "exam_date", _safe_str(c.get("exam_date"))); _line(lines, "📋", "total_questions", _safe_str(c.get("total_questions"))); _link_line(lines, "🔑", "answer_key_link", _safe_str(c.get("answer_key_link"), 500)); _line(lines, "📅", "objection_start_date", _safe_str(c.get("objection_start_date"))); _line(lines, "📅", "objection_last_date", _safe_str(c.get("objection_last_date"))); _line(lines, "💳", "objection_fee", _safe_str(c.get("objection_fee"))); _line(lines, "💳", "per_question_fee", _safe_str(c.get("per_question_fee"))); _line(lines, "📋", "objection_mode", _safe_str(c.get("objection_mode"))); _line(lines, "💳", "payment_mode", _safe_str(c.get("payment_mode"))); _line(lines, "📍", "objection_address", _safe_str(c.get("objection_address"))); _format_extra_details(lines, c)
 
+
 def _format_exam_schedule(lines, c):
     _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📅", "exam_start_date", _safe_str(c.get("exam_start_date"))); _line(lines, "📅", "exam_end_date", _safe_str(c.get("exam_end_date"))); _line(lines, "⏰", "exam_time", _safe_str(c.get("exam_time"))); _line(lines, "📍", "exam_center", _safe_str(c.get("exam_center"))); _line(lines, "📋", "subject_list", _safe_str(c.get("subject_list"))); _line(lines, "📋", "paper_code", _safe_str(c.get("paper_code"))); _line(lines, "📅", "practical_dates", _safe_str(c.get("practical_dates"))); _line(lines, "📅", "viva_dates", _safe_str(c.get("viva_dates"))); _link_line(lines, "📄", "timetable_link", _safe_str(c.get("timetable_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_revaluation(lines, c):
     _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📅", "revaluation_start_date", _safe_str(c.get("revaluation_start_date"))); _line(lines, "📅", "revaluation_last_date", _safe_str(c.get("revaluation_last_date"))); _line(lines, "💳", "revaluation_fee", _safe_str(c.get("revaluation_fee"))); _line(lines, "📋", "revaluation_mode", _safe_str(c.get("revaluation_mode"))); _line(lines, "📋", "instructions", _safe_str(c.get("instructions"))); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_migration_certificate(lines, c):
     _line(lines, "📜", "certificate_type", _safe_str(c.get("certificate_type"))); _line(lines, "📋", "applicable_to", _safe_str(c.get("applicable_to"))); _line(lines, "💳", "application_fee", _safe_str(c.get("application_fee"))); _line(lines, "⏱️", "processing_time", _safe_str(c.get("processing_time"))); _line(lines, "📋", "documents_required", _safe_str(c.get("documents_required"))); _line(lines, "📋", "instructions", _safe_str(c.get("instructions"))); _line(lines, "📞", "contact_number", _safe_str(c.get("contact_number"))); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_fee_structure(lines, c):
     _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📊", "course_level", _safe_str(c.get("course_level"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "💳", "fee_type", _safe_str(c.get("fee_type"))); _line(lines, "💰", "amount", _safe_str(c.get("amount"))); _line(lines, "💳", "late_fee", _safe_str(c.get("late_fee"))); _line(lines, "📅", "last_date", _safe_str(c.get("last_date"))); _line(lines, "📋", "payment_mode", _safe_str(c.get("payment_mode"))); _line(lines, "📋", "instructions", _safe_str(c.get("instructions"))); _link_line(lines, "🌐", "payment_link", _safe_str(c.get("payment_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_academic_calendar(lines, c):
     _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📋", "event_type", _safe_str(c.get("event_type"))); _line(lines, "📅", "event_date", _safe_str(c.get("event_date"))); _line(lines, "📝", "event_description", _safe_str(c.get("event_description"))); _line(lines, "👥", "applicable_to", _safe_str(c.get("applicable_to"))); _link_line(lines, "📄", "calendar_link", _safe_str(c.get("calendar_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_syllabus(lines, c):
     _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📊", "course_level", _safe_str(c.get("course_level"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📅", "effective_from", _safe_str(c.get("effective_from"))); _line(lines, "📋", "subject_list", _safe_str(c.get("subject_list"))); _link_line(lines, "📄", "syllabus_link", _safe_str(c.get("syllabus_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_timetable(lines, c):
     _line(lines, "📝", "exam_name", _safe_str(c.get("exam_name"))); _line(lines, "📅", "session", _safe_str(c.get("session"))); _line(lines, "📚", "semester", _safe_str(c.get("semester"))); _line(lines, "🎓", "course_name", _safe_str(c.get("course_name"))); _line(lines, "📅", "exam_start_date", _safe_str(c.get("exam_start_date"))); _line(lines, "📅", "exam_end_date", _safe_str(c.get("exam_end_date"))); _line(lines, "📋", "subject_list", _safe_str(c.get("subject_list"))); _link_line(lines, "📄", "timetable_link", _safe_str(c.get("timetable_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_scholarship(lines, c):
     _line(lines, "🎯", "scheme_name", _safe_str(c.get("scheme_name"))); _line(lines, "💰", "scholarship_amount", _safe_str(c.get("scholarship_amount"))); _line(lines, "👥", "applicable_category", _safe_str(c.get("applicable_category"))); _line(lines, "💵", "income_limit", _safe_str(c.get("income_limit"))); _line(lines, "🎓", "eligibility", _safe_str(c.get("eligibility"))); _line(lines, "📋", "documents_required", _safe_str(c.get("documents_required"))); _line(lines, "📋", "apply_mode", _safe_str(c.get("apply_mode"))); _line(lines, "📋", "portal_name", _safe_str(c.get("portal_name"))); _line(lines, "📅", "last_date", _safe_str(c.get("last_date"))); _line(lines, "📞", "helpline_number", _safe_str(c.get("helpline_number"))); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_placement(lines, c):
     _line(lines, "🏢", "company_name", _safe_str(c.get("company_name"))); _line(lines, "💼", "job_role", _safe_str(c.get("job_role"))); _line(lines, "💰", "package", _safe_str(c.get("package"))); _line(lines, "📍", "location", _safe_str(c.get("location"))); _line(lines, "📅", "drive_date", _safe_str(c.get("drive_date"))); _line(lines, "🎓", "eligibility", _safe_str(c.get("eligibility"))); _line(lines, "📋", "documents_required", _safe_str(c.get("documents_required"))); _line(lines, "📅", "last_date", _safe_str(c.get("last_date"))); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_tender(lines, c):
     _line(lines, "📋", "tender_no", _safe_str(c.get("tender_no"))); _line(lines, "📋", "tender_type", _safe_str(c.get("tender_type"))); _line(lines, "📝", "work_description", _safe_str(c.get("work_description"))); _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority"))); _line(lines, "💰", "estimated_cost", _safe_str(c.get("estimated_cost"))); _line(lines, "💳", "emd_amount", _safe_str(c.get("emd_amount"))); _line(lines, "📄", "tender_fee", _safe_str(c.get("tender_fee"))); _line(lines, "📅", "submission_last_date", _safe_str(c.get("submission_last_date"))); _line(lines, "📅", "opening_date", _safe_str(c.get("opening_date"))); _line(lines, "📋", "eligibility_criteria", _safe_str(c.get("eligibility_criteria"))); _link_line(lines, "📄", "tender_document_link", _safe_str(c.get("tender_document_link"), 500)); _format_extra_details(lines, c)
+
 
 def _format_vacancy(lines, c):
     total = c.get("total_posts")
@@ -2606,12 +2878,15 @@ def _format_vacancy(lines, c):
             lines.append(f"   • {pname} ({cat}){vac_str}")
     _line(lines, "📋", "advertisement_no", _safe_str(c.get("advertisement_no"))); _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority"))); _line(lines, "🎓", "qualification", _safe_str(c.get("qualification"))); _line(lines, "🎂", "age_limit", _safe_str(c.get("age_limit"))); _line(lines, "💰", "pay_scale", _safe_str(c.get("pay_scale"))); _line(lines, "📋", "experience_required", _safe_str(c.get("experience_required"))); _line(lines, "📋", "posting_location", _safe_str(c.get("posting_location"))); _line(lines, "📋", "selection_process", _safe_str(c.get("selection_process"))); _line(lines, "📅", "last_date", _safe_str(c.get("last_date"))); _line(lines, "📅", "interview_date", _safe_str(c.get("interview_date"))); _line(lines, "📍", "venue", _safe_str(c.get("venue"))); _line(lines, "📞", "contact_number", _safe_str(c.get("contact_number"))); _link_line(lines, "🌐", "apply_link", _safe_str(c.get("apply_link"), 500)); _format_extra_details(lines, c)
 
+
 def _format_notice(lines, c):
     _line(lines, "📝", "subject", _safe_str(c.get("subject"))); _line(lines, "📋", "notice_type", _safe_str(c.get("notice_type"))); _line(lines, "🔖", "reference_number", _safe_str(c.get("reference_number"))); _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority"))); _line(lines, "👥", "applicable_to", _safe_str(c.get("applicable_to"))); _line(lines, "📋", "action_required", _safe_str(c.get("action_required"))); _line(lines, "📅", "action_deadline", _safe_str(c.get("action_deadline"))); _line(lines, "📋", "supersedes", _safe_str(c.get("supersedes"))); _line(lines, "📅", "effective_date", _safe_str(c.get("effective_date"))); _line(lines, "📋", "important_instructions", _safe_str(c.get("important_instructions"))); _link_line(lines, "🔗", "order_link", _safe_str(c.get("order_link"), 500)); _format_extra_details(lines, c)
+
 
 _FORMATTERS = {
     "admission": _format_admission, "result": _format_result, "admit_card": _format_admit_card, "answer_key": _format_answer_key, "exam_schedule": _format_exam_schedule, "revaluation": _format_revaluation, "migration_certificate": _format_migration_certificate, "fee_structure": _format_fee_structure, "academic_calendar": _format_academic_calendar, "syllabus": _format_syllabus, "timetable": _format_timetable, "scholarship": _format_scholarship, "placement": _format_placement, "tender": _format_tender, "vacancy": _format_vacancy, "notice": _format_notice,
 }
+
 
 def format_message(site, item, classification=None):
     classification = classification or {}
@@ -2628,6 +2903,7 @@ def format_message(site, item, classification=None):
     emoji = CATEGORY_EMOJI.get(category, "📌")
     ocr_method = item.get("pdf_method", "")
     if ocr_method == "gemini": ocr_marker = " 🔍G"
+    elif ocr_method == "paddleocr": ocr_marker = " 🔍P"
     elif ocr_method == "rapidocr": ocr_marker = " 🔍R"
     elif ocr_method == "tesseract": ocr_marker = " 🔍T"
     else: ocr_marker = ""
@@ -2650,12 +2926,14 @@ def format_message(site, item, classification=None):
     lines.extend(_disclaimer_block())
     return "\n".join(lines)
 
+
 def truncate_telegram(text, limit=TELEGRAM_SAFE_LIMIT):
     if len(text) <= limit: return text
     truncated = text[:limit]
     last_nl = truncated.rfind("\n")
     if last_nl > limit * 0.7: truncated = truncated[:last_nl]
     return truncated.rstrip() + "\n\n<i>…(truncated)</i>"
+
 
 def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000, sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60):
     now = datetime.now(timezone.utc)
@@ -2772,6 +3050,7 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
     if final_size > max_bytes: raise RuntimeError(f"State exceeds configured byte cap: {final_size} > {max_bytes}")
     print(f"[STATE] bounded state size={final_size} bytes (limit={max_bytes})")
 
+
 def refresh_stats(state):
     counts = {"sent": 0, "ignored": 0, "pending": 0}
     for record in state.get("items", {}).values():
@@ -2781,315 +3060,14 @@ def refresh_stats(state):
     state["stats"]["ignored"] = counts["ignored"]
     state["stats"]["sent"] = counts["sent"]
 
-_SELF_TEST_STALE_CASES: List[Tuple[str, str, str, bool, str]] = [
-    ("संपर्क करें: नई भर्ती 2026", "", "", False, "Hindi recruitment title that contains 'संपर्क' word"),
-    ("Facebook WhatsApp Integration Notice", "", "", False, "Facebook-related integration notice (has 'notice' signal)"),
-    ("जिला प्रशासन द्वारा नई नियुक्ति सूचना", "", "", False, "Hindi appointment notice"),
-    ("Tender Notice: Contact Office for Details", "", "", False, "Tender with 'contact' nav word but also 'tender'/'notice' signals"),
-    ("19.09.2026: Very Short Term Tender Notice from Education Department, Giridih.", "", "", False, "Dated tender notice from district site"),
-    ("भर्ती विज्ञापन संख्या 03/2026 - जिला प्रशासन गिरिडीह", "", "", False, "Hindi vacancy with reference number"),
-    ("Home Whats New Facebook Latest News", "", "https://x.nic.in/about/", True, "Classic English menu dump on non-document URL"),
-    ("Home Whats New Facebook X Whats New 08.10.2026", "", "https://x.nic.in/contact/", True, "Long menu dump with repeated nav signals"),
-    ("Home Whats New Facebook X Whats New 08.10.2026: Important Apprenticeship Notice From Employment Exchange, Giridih. Published on: 08/10/2026 Prime Minister National Apprenticeship Mela – 12-10-2026 Sha", "", "", True, "Real Giridih production case with empty URL (no document hint)"),
-    ("मुख्य पृष्ठ महत्वपूर्ण लिंक त्वरित लिंक", "", "", True, "Hindi menu dump"),
-    ("About Us Contact Us Feedback Site Map", "", "https://x.nic.in/about/", True, "Classic English about/contact nav dump"),
-    ("Home Facebook Twitter Instagram YouTube", "", "https://x.nic.in/", True, "Social links nav dump"),
-    ("Home Whats New Facebook X Whats New 08.10.2026: Important Apprenticeship Notice From Employment Exchange, Giridih.", "", "https://giridih.nic.in/writereaddata/Apprenticeship.pdf", False, "Giridih production case: document URL with menu-dump title must be kept"),
-    ("Home Whats New Facebook X Whats New: Latest Update", "", "https://giridih.nic.in/downloadfile/notice_2026.pdf", False, "Document URL with menu-dump title must be kept"),
-]
-
-def _run_stale_notice_self_tests():
-    failures = 0
-    total = len(_SELF_TEST_STALE_CASES)
-    print(f"[TEST] Running {total} stale-notice cases...", file=sys.stderr)
-    for title, context, url, expected, desc in _SELF_TEST_STALE_CASES:
-        try: got = _is_stale_notice(title, context, url)
-        except Exception as exc:
-            print(f"[TEST-ERROR] {desc}: {type(exc).__name__}: {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        if got == expected: print(f"[TEST-PASS ] {desc}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] {desc}: got={got} expected={expected} title='{title[:70]}'", file=sys.stderr)
-            failures += 1
-    print(f"[TEST] Done: {total - failures}/{total} passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_spa_self_tests():
-    failures = 0
-    cases = [("https://vbu.ac.in/#/notices", "https://vbu.ac.in/#/notices"), ("https://vbu.ac.in/#!/home", "https://vbu.ac.in/#!/home"), ("https://vbu.ac.in/#section", "https://vbu.ac.in/")]
-    for raw, expected in cases:
-        got = _canonical_spa_url(raw)
-        if got == expected: print(f"[TEST-PASS ] SPA URL canonicalization: {raw}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] SPA URL canonicalization: got={got!r}, expected={expected!r}", file=sys.stderr)
-            failures += 1
-    identity_cases = [("https://vbu.ac.in/#/notice/12345", "https://vbu.ac.in/#/notice/12345"), ("https://vbu.ac.in/#!/home", "https://vbu.ac.in/#!/home"), ("https://vbu.ac.in/#team", "https://vbu.ac.in/"), ("https://vbu.ac.in/?utm_source=test#/notice/12345", "https://vbu.ac.in/#/notice/12345")]
-    for raw, expected in identity_cases:
-        got = canonical_identity_url(raw)
-        if got == expected: print(f"[TEST-PASS ] SPA identity canonicalization: {raw}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] SPA identity canonicalization: got={got!r}, expected={expected!r}", file=sys.stderr)
-            failures += 1
-    try:
-        test_html = '<a href="#/notice/12345">UG Semester Result Notice 2026</a>'
-        test_scan = {"keywords": ["notice", "result", "semester"], "discovery_keywords": [], "max_items_per_site": 100}
-        test_site = {"id": "vbu-test", "name": "VBU test", "keywords": [], "discovery_keywords": []}
-        extracted = extract_candidates(test_html, "https://vbu.ac.in/", test_site, test_scan)
-        if any(row.get("url") == "https://vbu.ac.in/#/notice/12345" for row in extracted): print("[TEST-PASS ] SPA candidate extraction preserves hash route", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] SPA candidate extraction lost hash route: {[row.get('url') for row in extracted]!r}", file=sys.stderr)
-            failures += 1
-    except Exception as exc:
-        print(f"[TEST-FAIL ] SPA candidate extraction raised {type(exc).__name__}: {exc}", file=sys.stderr)
-        failures += 1
-    template_cases = [("<div>{{ notice.title }}</div>", True), ("<div>Ordinary notice title</div>", False)]
-    for html_text, expected in template_cases:
-        got = _has_unrendered_angular_templates(html_text)
-        if got == expected: print(f"[TEST-PASS ] Angular template detection: expected={expected}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] Angular template detection: got={got}, expected={expected}", file=sys.stderr)
-            failures += 1
-    js_decision_cases = [({"js_render": "auto"}, "<html><body>Normal HTML with enough text and several links</body></html>", "https://vbu.ac.in/#/notice/123", True), ({"js_render": "never"}, "<html><body>ng-app</body></html>", "https://vbu.ac.in/#/notice/123", False), ({"js_render": "always"}, "<html><body>Static</body></html>", "https://vbu.ac.in/", True)]
-    for site, html_text, page_url, expected in js_decision_cases:
-        got = _should_render_js(site, html_text, page_url)
-        if got == expected: print(f"[TEST-PASS ] JS render decision: mode={site['js_render']}, url={page_url}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] JS render decision: got={got}, expected={expected}, url={page_url}", file=sys.stderr)
-            failures += 1
-    title_cases = [("{{ notice.title }}", True), ("undefined", True), ("[ngClass] notice", True), ("UG Semester Examination Form Fill-up Notice 2026", False)]
-    for title, expected in title_cases:
-        got = _is_garbage_title(title)
-        if got == expected: print(f"[TEST-PASS ] SPA title filtering: {title[:50]!r}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] SPA title filtering: {title[:50]!r}: got={got}, expected={expected}", file=sys.stderr)
-            failures += 1
-    route_cases = [("https://vbu.ac.in/#/notices", False), ("https://vbu.ac.in/#!/home", False), ("https://vbu.ac.in/archive/", True)]
-    for url, expected in route_cases:
-        got = _is_navigation_url(url)
-        if got == expected: print(f"[TEST-PASS ] SPA navigation filter: {url}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] SPA navigation filter: {url}: got={got}, expected={expected}", file=sys.stderr)
-            failures += 1
-    total = len(cases) + len(identity_cases) + 1 + len(template_cases) + len(js_decision_cases) + len(title_cases) + len(route_cases)
-    print(f"[TEST] SPA: {total - failures}/{total} passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_config_self_tests():
-    failures = 0
-    try:
-        cfg = get_config()
-        sites = {site.get("id"): site for site in cfg.get("websites", [])}
-        if len(sites) >= 1: print(f"[TEST-PASS ] Config loaded {len(sites)} enabled sites", file=sys.stderr)
-        else:
-            print("[TEST-FAIL ] Config has no enabled sites", file=sys.stderr)
-            failures += 1
-        scan = cfg.get("scan", {})
-        scan_checks = [("request_timeout_seconds", 45), ("domain_delay_seconds", 0.5)]
-        for key, expected in scan_checks:
-            got = scan.get(key)
-            if got == expected: print(f"[TEST-PASS ] Scan config {key}", file=sys.stderr)
-            else:
-                print(f"[TEST-FAIL ] Scan config {key}: got={got!r}, expected={expected!r}", file=sys.stderr)
-                failures += 1
-        broad_discovery = {"pdf", "download"}.intersection(set(scan.get("discovery_keywords", [])))
-        if not broad_discovery: print("[TEST-PASS ] Broad discovery keywords excluded", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] Broad discovery keywords still present: {sorted(broad_discovery)}", file=sys.stderr)
-            failures += 1
-        if "iimranchi" not in sites and "iiimranchi" in sites: print("[TEST-PASS ] Legacy IIM site ID preserved for state compatibility", file=sys.stderr)
-        elif "iimranchi" in sites: print("[TEST-PASS ] IIM site ID uses canonical spelling", file=sys.stderr)
-        else:
-            print("[TEST-FAIL ] IIM Ranchi site ID missing", file=sys.stderr)
-            failures += 1
-        expected_urls = {"kolhan-university": "https://www.kolhanuniversity.ac.in/", "bau-ranchi": "https://bauranchi.org/"}
-        for site_id, expected_url in expected_urls.items():
-            got_url = sites.get(site_id, {}).get("url")
-            if got_url == expected_url: print(f"[TEST-PASS ] Official base URL {site_id}", file=sys.stderr)
-            else:
-                print(f"[TEST-FAIL ] Base URL {site_id}: got={got_url!r}, expected={expected_url!r}", file=sys.stderr)
-                failures += 1
-        advanced_checks = [("rims-ranchi", "baseline_max_errors", 10), ("aisect-university", "js_render", "always"), ("aisect-university", "js_wait_after_ms", 10000), ("aisect-university", "js_selector_timeout_ms", 45000), ("aisect-university", "request_timeout_seconds", 120)]
-        for site_id, key, expected in advanced_checks:
-            site = sites.get(site_id)
-            got = site.get(key) if site else None
-            if got == expected: print(f"[TEST-PASS ] Advanced config {site_id}.{key}", file=sys.stderr)
-            else:
-                print(f"[TEST-FAIL ] Advanced config {site_id}.{key}: got={got!r}, expected={expected!r}", file=sys.stderr)
-                failures += 1
-        if "annual report" in scan.get("exclude_title_signals", []): print("[TEST-PASS ] Configurable low-relevance title exclusion loaded", file=sys.stderr)
-        else:
-            print("[TEST-FAIL ] Configurable title exclusion missing", file=sys.stderr)
-            failures += 1
-        if scan.get("max_state_bytes") == 8000000: print("[TEST-PASS ] State size cap supports configured 8 MB", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] State size cap mismatch: {scan.get('max_state_bytes')!r}", file=sys.stderr)
-            failures += 1
-        checks = [("vbu-hazaribagh", "js_render", "always"), ("vbu-hazaribagh", "js_wait_after_ms", 7000), ("vbu-hazaribagh", "js_scroll_bottom", True), ("vbu-hazaribagh", "js_wait_for_selector", "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table"), ("bbmku-dhanbad", "js_wait_after_ms", 3500)]
-        for site_id, key, expected in checks:
-            site = sites.get(site_id)
-            got = site.get(key) if site else None
-            if got == expected: print(f"[TEST-PASS ] Per-site config {site_id}.{key}", file=sys.stderr)
-            else:
-                print(f"[TEST-FAIL ] Per-site config {site_id}.{key}: got={got!r}, expected={expected!r}", file=sys.stderr)
-                failures += 1
-    except Exception as exc:
-        print(f"[TEST-FAIL ] Config self-test raised {type(exc).__name__}: {exc}", file=sys.stderr)
-        failures += 1
-    total_checks = 19
-    print(f"[TEST] Config: {total_checks - failures}/{total_checks} passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_dedup_self_tests():
-    failures = 0
-    total = 0
-    cases = [([('old', 'Recruitment Notice 01/2026 For Clerk Post', 'https://x.nic.in/writereaddata/notice01.pdf')], 'Recruitment Notice 02/2026 For Clerk Post', 'https://x.nic.in/writereaddata/notice02.pdf', None, 'sequential numbered notices remain distinct'), ([('old', 'Recruitment Notice 01/2026 For Clerk Post', 'https://x.nic.in/writereaddata/notice01.pdf')], 'Recruitment Notice 01/2026 For Clerk Post', 'https://x.nic.in/archive/notice01-copy.pdf', 'old', 'obvious same-basename copy alias remains deduplicable'), ([('old', 'Events Session: 2026-2027 Meta-Analysis for Randomised Control Trials', 'https://x.ac.in/events/meta-analysis-1')], 'Events Session: 2026-2027 Meta-Analysis for Randomised Control Trials', 'https://x.ac.in/events/meta-analysis-13', None, 'different event URLs with identical titles remain distinct')]
-    for site_items, title, url, expected, label in cases:
-        total += 1
-        got = find_fuzzy_match(site_items, title, url)
-        if got == expected: print(f"[TEST-PASS ] {label}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] {label}: got={got!r}, expected={expected!r}", file=sys.stderr)
-            failures += 1
-    total += 1
-    same_url_id_a = item_id("site-a", "https://x.ac.in/notice?id=1", "Old title", "Old dynamic counter")
-    same_url_id_b = item_id("site-a", "https://x.ac.in/notice?id=1", "Updated title", "New dynamic counter")
-    if same_url_id_a == same_url_id_b: print("[TEST-PASS ] Same canonical URL keeps stable identity when metadata changes", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Item identity changed with mutable title/context", file=sys.stderr)
-        failures += 1
-    state = {"items": {"sent1": {"site_id": "district-a", "status": "sent", "title": "Notice A", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1"}, "ready1": {"site_id": "district-a", "status": "ready", "title": "Notice B", "pdf_hash": "visual-v1:ready", "pdf_hash_kind": "visual-v1"}, "sent_other_site": {"site_id": "district-b", "status": "sent", "title": "Notice C", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1"}}}
-    hash_cases = [({"site_id": "district-a", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1", "title": "Notice A"}, "Notice A", "same-site sent PDF fingerprint detected"), ({"site_id": "district-a", "pdf_hash": "visual-v1:ready", "pdf_hash_kind": "visual-v1", "title": "Notice B"}, None, "ready-only fingerprint does not block sending"), ({"site_id": "district-c", "pdf_hash": "visual-v1:abc", "pdf_hash_kind": "visual-v1", "title": "Notice A"}, None, "cross-district fingerprint does not block sending"), ({"site_id": "district-a", "pdf_hash": "visual-v1:different", "pdf_hash_kind": "visual-v1", "title": "Notice X"}, None, "different fingerprint remains eligible")]
-    for record, expected, label in hash_cases:
-        total += 1
-        got = _is_duplicate_by_pdf_hash(state, record, exclude_iid="new")
-        if got == expected: print(f"[TEST-PASS ] {label}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] {label}: got={got!r}, expected={expected!r}", file=sys.stderr)
-            failures += 1
-    print(f"[TEST] Dedup: {total - failures}/{total} passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_quality_guard_self_tests():
-    failures = 0
-    cases = [("Read More chevron_right", True), ("View All chevron_right", True), ("chevron_right", True), ("Read More About Recruitment Rules 2026", False), ("ADVERTISEMENT FOR NON", False), ("Department Name", True), ("Registration Number", True), ("National Institute of Technology Jamshedpur Main Administrative Building PIN 831014", True)]
-    for title, expected in cases:
-        got = _is_generic_title(title)
-        if got == expected: print(f"[TEST-PASS ] Generic-title filter: {title!r}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] Generic-title filter {title!r}: got={got}, expected={expected}", file=sys.stderr)
-            failures += 1
-    old_session_start = (datetime.now(timezone.utc).year if datetime.now(timezone.utc).month >= 7 else datetime.now(timezone.utc).year - 1) - 1
-    old_session = f"{old_session_start}-{str((old_session_start + 1) % 100).zfill(2)}"
-    if _is_stale_notice(f"Provisional list for Ph.D. Admission {old_session}", "", "https://x.ac.in/admission"): print("[TEST-PASS ] Old academic admission session suppressed", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Old academic admission session was not suppressed", file=sys.stderr)
-        failures += 1
-    old_result_cases = ["PG SEM-3 EXAM-2023 (2022-24) COMMERCE RESULT", "RESULT OF PG SEM 3 (2022-2022) SESSION M.A. AND M.Sc."]
-    for old_result_title in old_result_cases:
-        record = {"title": old_result_title, "context": "", "url": "https://x.ac.in/result.pdf"}
-        if _is_stale_notice(old_result_title, "", record["url"]) and _keyword_pre_classify(record) is False: print(f"[TEST-PASS ] Old result suppressed: {old_result_title[:55]}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] Old result not suppressed: {old_result_title[:55]}", file=sys.stderr)
-            failures += 1
-    if not _meaningful_metadata_change("CLAT 2026 Admission Closure Notice", "CLAT 2026 Admission Closure Notice", "CLAT 2026 Admission Closure Notice", "CLAT 2026 Admission Closure Notice Read More chevron_right"): print("[TEST-PASS ] Same-title context/UI changes do not reprocess", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Same-title context/UI changes triggered reprocess", file=sys.stderr)
-        failures += 1
-    if _meaningful_metadata_change("Admission Notice 2026", "Admission Notice 2026", "Last date: 10 October 2026", "Last date: 20 October 2026"): print("[TEST-PASS ] Same-title deadline change remains meaningful", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Same-title deadline change was ignored", file=sys.stderr)
-        failures += 1
-    noise_cases = [({"title": "Tender Notice for Supply of Furniture 2026", "url": "https://x.ac.in/tender.pdf"}, True, "tender notice remains eligible"), ({"title": "Annual Report 2026", "url": "https://x.ac.in/report.pdf"}, False, "annual report noise suppressed"), ({"title": "Faculty Recruitment Notice 2026", "url": "https://x.ac.in/jobs.pdf"}, True, "faculty recruitment remains eligible")]
-    for record, expected, label in noise_cases:
-        got = _keyword_pre_classify(record)
-        if got is expected: print(f"[TEST-PASS ] {label}", file=sys.stderr)
-        else:
-            print(f"[TEST-FAIL ] {label}: got={got!r}, expected={expected!r}", file=sys.stderr)
-            failures += 1
-    if baseline_can_complete(True, [f"partial error {i}" for i in range(8)], 10): print("[TEST-PASS ] Per-site baseline error budget permits bounded partial failures", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Per-site baseline error budget rejected 8/10 errors", file=sys.stderr)
-        failures += 1
-    if not baseline_can_complete(True, [f"partial error {i}" for i in range(11)], 10): print("[TEST-PASS ] Per-site baseline budget still rejects excessive errors", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Per-site baseline budget accepted excessive errors", file=sys.stderr)
-        failures += 1
-    if baseline_can_complete(True, ["one broken detail link", "one pagination timeout"]): print("[TEST-PASS ] Baseline can complete with a few partial errors", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Baseline blocked by a few partial errors", file=sys.stderr)
-        failures += 1
-    if not baseline_can_complete(False, []): print("[TEST-PASS ] Failed scan cannot complete baseline", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] Failed scan incorrectly completed baseline", file=sys.stderr)
-        failures += 1
-    print(f"[TEST] Quality-guards: {20 - failures}/20 cases, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_title_cleanup_self_tests():
-    failures = 0
-    total = 0
-    total += 1
-    name = _filename_to_title("https://giridih.nic.in/writereaddata/Apprenticeship_Mela_12102026.pdf")
-    if "Apprenticeship" in name and "Mela" in name: print(f"[TEST-PASS ] filename_to_title → {name!r}", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] filename_to_title: got {name!r}", file=sys.stderr)
-        failures += 1
-    total += 1
-    garbage = ("Home Whats New Facebook X Whats New 08.10.2026: Important Apprenticeship Notice From Employment Exchange, Giridih. Published on: 08/10/2026 Prime Minister National Apprenticeship Mela – 12-10-2026 Sha")
-    cleaned = _strip_nav_prefix(garbage)
-    if ("Apprenticeship" in cleaned and not cleaned.lower().startswith("home") and "Published on" not in cleaned): print(f"[TEST-PASS ] strip_nav_prefix → {cleaned[:80]!r}", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] strip_nav_prefix: got {cleaned!r}", file=sys.stderr)
-        failures += 1
-    total += 1
-    if _looks_like_menu_dump("Home Whats New Facebook X Whats New 08.10.2026"): print("[TEST-PASS ] looks_like_menu_dump detected nav run", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] looks_like_menu_dump missed nav run", file=sys.stderr)
-        failures += 1
-    total += 1
-    if not _looks_like_menu_dump("Important Recruitment Notice From Employment Exchange, Giridih"): print("[TEST-PASS ] clean title not flagged as menu-dump", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] clean title wrongly flagged as menu-dump", file=sys.stderr)
-        failures += 1
-    total += 1
-    item = {"explicit_title": "10.09.2026: Important Recruitment Notice From Employment Exchange, Giridih.", "title": "Home Whats New Facebook X Whats New garbage", "context": "site-wide nav", "url": "https://giridih.nic.in/writereaddata/x.pdf"}
-    resolved = _resolve_title(item)
-    if resolved.startswith("10.09.2026"): print(f"[TEST-PASS ] resolve_title → {resolved[:60]!r}", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] resolve_title: got {resolved!r}", file=sys.stderr)
-        failures += 1
-    total += 1
-    item = {"title": garbage, "context": "", "url": "https://giridih.nic.in/writereaddata/Apprenticeship_Mela_12102026.pdf"}
-    resolved = _resolve_title(item)
-    if "Apprenticeship" in resolved and "Home" not in resolved[:10]: print(f"[TEST-PASS ] resolve_title cleanup → {resolved[:60]!r}", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] resolve_title cleanup: got {resolved!r}", file=sys.stderr)
-        failures += 1
-    total += 1
-    html_snippet = """<html><body><table><tr><th>Title:</th><td>10.09.2026: Important Recruitment Notice From Employment Exchange, Giridih.</td></tr><tr><th>Description:</th><td>Important Recruitment Notice From Employment Exchange, Giridih.</td></tr></table></body></html>"""
-    soup = BeautifulSoup(html_snippet, "html.parser")
-    extracted = _extract_explicit_title(soup)
-    if extracted.startswith("10.09.2026") and "Recruitment Notice" in extracted: print(f"[TEST-PASS ] extract_explicit_title → {extracted[:60]!r}", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] extract_explicit_title: got {extracted!r}", file=sys.stderr)
-        failures += 1
-    total += 1
-    if (_is_notice_document_url("https://x.nic.in/writereaddata/a.pdf") and _is_notice_document_url("https://x.nic.in/downloadfile?id=5") and not _is_notice_document_url("https://x.nic.in/about-us/")): print("[TEST-PASS ] is_notice_document_url classifies correctly", file=sys.stderr)
-    else:
-        print("[TEST-FAIL ] is_notice_document_url misclassified a URL", file=sys.stderr)
-        failures += 1
-    print(f"[TEST] Title-cleanup: {total - failures}/{total} passed, {failures} failed.", file=sys.stderr)
-    return failures
 
 def _is_non_notice_pdf(record):
-    """Bug 6 fix: used to skip RE-PROCESS on faculty/personal PDFs.
-    Returns True if the URL is a .pdf but title has no notice keyword."""
     url_lower = (record.get("url") or "").lower()
     if not (url_lower.endswith(".pdf") or ".pdf" in url_lower):
         return False
     combined = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
     return not any(kw in combined for kw in _NOTICE_KEYWORDS)
+
 
 def _should_fetch_pdf(record):
     if record.get("pdf_extracted") or record.get("pdf_text"): return False
@@ -3102,21 +3080,12 @@ def _should_fetch_pdf(record):
         if parsed.path in ("", "/"): return False
     except Exception: pass
 
-    # ============================================================
-    # Bug 2 fix: Title check comes FIRST (before URL blocklist), so a legitimate
-    # notice PDF under /adminrie/files/ is fetched, while faculty/personal PDFs
-    # are skipped even if they live under /faculty/ etc.
-    # Bug 1 fix: _NOTICE_KEYWORDS includes "notification", "convocation", etc.
-    # ============================================================
     if url_lower.endswith(".pdf") or ".pdf" in url_lower:
         title_lower = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
         if not any(kw in title_lower for kw in _NOTICE_KEYWORDS):
             print(f"[SKIP-PDF] Non-notice PDF (faculty/other): {title_lower[:60]}", file=sys.stderr)
             return False
 
-    # Bug 4 fix: /faculty/, /profile/, /staff/, /adminrie/files/ removed from blocklist.
-    # Faculty PDFs are caught by the title check above; faculty HTML pages return
-    # False naturally at the bottom (no is_pdf flag, no known endpoint).
     block_patterns = (
         "/past-notices", "/past_notices", "/whats-new", "/whats_new",
         "/notice_category", "/notice-category", "/document-category",
@@ -3132,12 +3101,12 @@ def _should_fetch_pdf(record):
     if record.get("is_pdf", False): return True
     return False
 
+
 def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
     targets = [(iid, record) for iid, record in batch if _should_fetch_pdf(record)]
     if not targets: return
     default_timeout = scan["request_timeout_seconds"]
     def _fetch_one(record):
-        # Bug 5 fix: abort PDF fetch if we're past the reserved send deadline
         if send_deadline and time.monotonic() > send_deadline:
             return None, "", False, "time_limit", ""
         try:
@@ -3188,6 +3157,7 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
                     print(f"[STALE-PDF] Suppressed old PDF notice: {record.get('url','')[:80]}", file=sys.stderr)
                     continue
 
+
 def _parse_upload_date(raw):
     if not raw: return None
     try:
@@ -3195,6 +3165,7 @@ def _parse_upload_date(raw):
         if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return dt
     except Exception: return None
+
 
 def suppress_stale_pending_and_ready(state):
     changed = 0
@@ -3210,6 +3181,7 @@ def suppress_stale_pending_and_ready(state):
     if changed: print(f"[STALE-SKIP] Suppressed {changed} stale persisted item(s)", file=sys.stderr)
     return changed
 
+
 def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_site_ids):
     by_id = {iid: record for iid, record in pending}
     for iid, record in state.get("items", {}).items():
@@ -3220,6 +3192,7 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
         if int(record.get("attempts", 0) or 0) >= max_pending_attempts: continue
         by_id[iid] = record
     return list(by_id.items())
+
 
 def main():
     global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
@@ -3237,9 +3210,7 @@ def main():
 
     import time as _time
     _START_TIME = _time.monotonic()
-    _MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", str(90 * 60)))  # 90 mins default
-    # Bug 5 fix: reserve 15 minutes (900s) for the send phase so batch processing never
-    # eats into it. Batch loop stops at 75 min, send loop has 75-90 min.
+    _MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", str(90 * 60)))
     _SEND_RESERVE_SECONDS = int(os.getenv("SEND_RESERVE_SECONDS", "900"))
     send_deadline = _START_TIME + _MAX_RUN_SECONDS - _SEND_RESERVE_SECONDS
     def _time_exceeded(): return (_time.monotonic() - _START_TIME) > _MAX_RUN_SECONDS
@@ -3268,6 +3239,7 @@ def main():
         print("[FATAL] No Gemini API keys configured. Set GEMINI_API_KEYS or GEMINI_API_KEY.", file=sys.stderr)
         return 2
     print(f"[INFO] Loaded {len(_GEMINI_KEYS_POOL)} unique Gemini API key(s).", file=sys.stderr)
+    print(f"[INFO] OCR engines: Gemini={GEMINI_PDF_OCR_ENABLED}, PaddleOCR={_PADDLEOCR_AVAILABLE}, Tesseract={_TESSERACT_AVAILABLE}, RapidOCR={_RAPIDOCR_AVAILABLE}", file=sys.stderr)
     if not cfg["websites"]:
         print("[FATAL] No enabled websites configured.", file=sys.stderr)
         return 2
@@ -3385,8 +3357,6 @@ def main():
                     metadata_changed = _meaningful_metadata_change(old_title, new_title, old_context, new_context)
                     record["last_seen"] = utc_now()
                     current_status = record.get("status")
-
-                    # Bug 6 fix: skip RE-PROCESS for non-notice PDFs (faculty/personal files)
                     if metadata_changed and current_status in {"ignored", "baseline"}:
                         if _is_non_notice_pdf(record):
                             print(f"[SKIP-RE-PROCESS] Non-notice PDF (faculty/other): {candidate['url'][:100]}", file=sys.stderr)
@@ -3538,7 +3508,6 @@ def main():
                 else: gemini_batch.append((iid, record))
             result = {}
             if gemini_batch:
-                # Bug 5 fix: skip Gemini if we've used the reserved send budget
                 if _time.monotonic() > send_deadline:
                     print(f"[TIME_LIMIT] Gemini budget reached — {len(gemini_batch)} item(s) pending for next run", file=sys.stderr)
                     for iid, record in gemini_batch:
@@ -3654,105 +3623,6 @@ def main():
     print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} errors_this_run={run_errors} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
     return 0
 
-def _run_candidate_pdf_flag_self_tests():
-    failures = 0
-    html_text = """<html><body><a href="/notice/academic-calendar/">Academic Calendar Notice 2026</a><a href="/uploads/exam-schedule-2026.pdf">Exam Schedule 2026 PDF</a></body></html>"""
-    rows = extract_candidates(html_text, "https://x.ac.in/", {"keywords": []}, {"keywords": ["notice", "exam", "calendar"], "max_items_per_site": 100})
-    by_url = {row["url"]: row for row in rows}
-    html_row = by_url.get("https://x.ac.in/notice/academic-calendar/")
-    pdf_row = by_url.get("https://x.ac.in/uploads/exam-schedule-2026.pdf")
-    if html_row and not html_row.get("is_pdf"): print("[TEST-PASS ] HTML notice path is not falsely marked PDF", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] HTML notice PDF flag wrong: {html_row!r}", file=sys.stderr)
-        failures += 1
-    if pdf_row and pdf_row.get("is_pdf"): print("[TEST-PASS ] Real .pdf URL is marked PDF", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] Real PDF flag wrong: {pdf_row!r}", file=sys.stderr)
-        failures += 1
-    print(f"[TEST] Candidate PDF flags: {2 - failures}/2 passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_pdf_table_compat_self_tests():
-    failures = 0
-    original_open = pdfplumber.open
-    class _FakePage:
-        def __init__(self, tables): self._tables = tables
-        def extract_text(self): return ""
-        def extract_tables(self): return self._tables
-    class _FakePdf:
-        def __init__(self, tables): self.pages = [_FakePage(tables)]
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
-    class _FakeTable:
-        def extract(self): return [["Fee Type", "Amount"], ["Tuition Fee", "12000"]]
-    cases = [("nested-list", [[ ["Fee Type", "Amount"], ["Tuition Fee", "12000"] ]]), ("table-object", [_FakeTable()])]
-    try:
-        for label, tables in cases:
-            pdfplumber.open = lambda _source, _tables=tables: _FakePdf(_tables)
-            extracted = _extract_pdf_text_plumber(b"test-pdf")
-            ok = "Fee Type | Amount" in extracted and "Tuition Fee | 12000" in extracted
-            if ok: print(f"[TEST-PASS ] pdfplumber table compatibility: {label}", file=sys.stderr)
-            else:
-                print(f"[TEST-FAIL ] pdfplumber table compatibility: {label}; output={extracted!r}", file=sys.stderr)
-                failures += 1
-    finally: pdfplumber.open = original_open
-    print(f"[TEST] PDF table compatibility: {len(cases) - failures}/{len(cases)} passed, {failures} failed.", file=sys.stderr)
-    return failures
-
-def _run_retention_self_tests():
-    failures = 0
-    now = datetime.now(timezone.utc)
-    old_stamp = (now - timedelta(days=20)).isoformat()
-    state = {"items": {"sent-old": {"status": "sent", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp}, "ignored-old": {"status": "ignored", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp}, "baseline-old": {"status": "baseline", "first_seen": old_stamp, "terminal_at": old_stamp, "last_seen": old_stamp}, "sent-recent": {"status": "sent", "first_seen": now.isoformat(), "terminal_at": now.isoformat(), "last_seen": now.isoformat()}}, "review_queue": {}}
-    prune_state(state, retention_days=90, max_items=3000, max_pending_attempts=500, max_bytes=8000000, sent_retention_days=30, ignored_retention_days=10, baseline_retention_days=15)
-    expected_present = {"sent-old", "sent-recent"}
-    expected_absent = {"ignored-old", "baseline-old"}
-    if expected_present.issubset(state["items"]) and expected_absent.isdisjoint(state["items"]): print("[TEST-PASS ] Configured sent/ignored/baseline retention periods are honored", file=sys.stderr)
-    else:
-        print(f"[TEST-FAIL ] Retention policy mismatch: keys={sorted(state['items'])}", file=sys.stderr)
-        failures += 1
-    print(f"[TEST-SUMMARY] retention: {1 - failures} passed, {failures} failed", file=sys.stderr)
-    return failures
-
-def audit_state_read_only():
-    try: state = load_state()
-    except Exception as exc:
-        print(f"[AUDIT-ERROR] Could not load state: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    items = state.get("items", {})
-    if not isinstance(items, dict):
-        print("[AUDIT-ERROR] state.items is not an object", file=sys.stderr)
-        return 2
-    statuses = Counter()
-    generic = []
-    stale = []
-    duplicate_groups = {}
-    for iid, record in items.items():
-        if not isinstance(record, dict): continue
-        status = str(record.get("status", "unknown"))
-        statuses[status] += 1
-        title = clean_text(record.get("explicit_title") or record.get("title", ""), 500)
-        site_id = str(record.get("site_id", "unknown"))
-        if _is_generic_title(title): generic.append((site_id, title, record.get("url", ""), status))
-        if status not in {"sent", "ignored", "permanent_error"} and _is_stale_notice(title, record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): stale.append((site_id, title, record.get("url", ""), status))
-        normalized = re.sub(r"[^\w\s]", " ", title.casefold())
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-        if len(normalized) >= 12 and not _is_generic_title(title): duplicate_groups.setdefault((site_id, normalized), []).append((iid, title, record.get("url", ""), status))
-    duplicate_groups = {key: rows for key, rows in duplicate_groups.items() if len(rows) > 1}
-    print("[STATE-AUDIT] Read-only; no records were changed.")
-    print(f"[STATE-AUDIT] items={len(items)} status_counts={dict(statuses)}")
-    print(f"[STATE-AUDIT] generic_titles={len(generic)} stale_unsent_candidates={len(stale)} duplicate_title_groups={len(duplicate_groups)}")
-    for label, rows in (("GENERIC", generic), ("STALE", stale)):
-        for site_id, title, url, status in rows[:15]: print(f"[{label}] site={site_id} status={status} title={title[:100]!r} url={str(url)[:180]}")
-    for (site_id, title), rows in list(duplicate_groups.items())[:15]:
-        print(f"[DUPLICATE-TITLE] site={site_id} title={title[:100]!r} count={len(rows)}")
-        for _iid, row_title, url, status in rows[:3]: print(f"    ↳ status={status} title={row_title[:80]!r} url={str(url)[:160]}")
-    return 0
 
 if __name__ == "__main__":
-    if "--audit-state" in sys.argv: raise SystemExit(audit_state_read_only())
-    if "--test" in sys.argv:
-        _fails = (_run_stale_notice_self_tests() + _run_quality_guard_self_tests() + _run_title_cleanup_self_tests() + _run_dedup_self_tests() + _run_spa_self_tests() + _run_config_self_tests() + _run_pdf_table_compat_self_tests() + _run_candidate_pdf_flag_self_tests() + _run_retention_self_tests())
-        print(f"[TEST-SUMMARY] overall: {'FAIL' if _fails else 'PASS'}; failures={_fails}", file=sys.stderr)
-        raise SystemExit(1 if _fails else 0)
     raise SystemExit(main())
