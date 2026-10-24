@@ -1,0 +1,55 @@
+name: VBU Diagnostic
+
+on:
+  workflow_dispatch:  # manual trigger only — GitHub UI se "Run workflow" button
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright beautifulsoup4 lxml
+
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install chromium --with-deps
+
+      - name: Run VBU diagnostic script
+        run: |
+          python diagnose_vbu.py
+        continue-on-error: true
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vbu-diagnostic-output
+          path: |
+            vbu_report.txt
+            vbu_rendered.html
+            vbu_screenshot.png
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Show report in logs
+        if: always()
+        run: |
+          if [ -f vbu_report.txt ]; then
+            echo "========== VBU REPORT =========="
+            cat vbu_report.txt
+            echo "================================"
+          else
+            echo "❌ vbu_report.txt not found — script may have crashed"
+          fi
