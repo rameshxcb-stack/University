@@ -219,8 +219,8 @@
     {
       "id": "aisect-university",
       "name": "AISECT University, Hazaribagh",
-      "url": "https://aisectuniversity.ac.in/",
-      "enabled": false,
+      "url": "https://www.aisectuniversityjharkhand.ac.in/",
+      "enabled": true,
       "js_render": "auto",
       "js_wait_after_ms": 4000,
       "request_timeout_seconds": 60,
