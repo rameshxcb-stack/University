@@ -19,6 +19,14 @@ onnxruntime>=1.17
 pytesseract>=0.3.10,<1
 Pillow>=10.0,<12
 
+# PaddleOCR — Best Hindi/Devanagari accuracy, free & offline
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+opencv-python-headless==4.9.0.80
+
+# numpy — pinned <1.27 because paddlepaddle 2.6.x requires this
+numpy<1.27
+
 # ---------------------------------------------------------------------------
 # Fuzzy matching / deduplication
 # ---------------------------------------------------------------------------
