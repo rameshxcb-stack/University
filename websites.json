@@ -40,11 +40,14 @@
       "enabled": true,
       "verify_ssl": false,
       "js_render": "always",
-      "js_wait_after_ms": 7000,
-      "js_wait_for_selector": "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table",
+      "js_wait_after_ms": 4000,
+      "js_wait_for_selector": "ng-view, .notice, .notice-list, table",
+      "js_selector_timeout_ms": 20000,
       "js_scroll_bottom": true,
+      "baseline_max_errors": 15,
+      "request_timeout_seconds": 60,
       "keywords": ["notice", "exam", "result", "admission", "syllabus", "timetable", "revaluation"],
-      "discovery_keywords": ["notice", "exam", "result", "admission", "syllabus", "revaluation", "migration"]
+      "discovery_keywords": ["notice", "exam", "result", "admission", "revaluation"]
     },
     {
       "id": "ranchi-university",
@@ -217,14 +220,11 @@
       "id": "aisect-university",
       "name": "AISECT University, Hazaribagh",
       "url": "https://aisectuniversity.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 10000,
-      "js_wait_for_selector": "table, .notice, .notice-list, .news, .announcement, .notice-item, .announcement-list, a[href*=\"pdf\"], a[href*=\"notice\"]",
-      "js_scroll_bottom": true,
-      "request_timeout_seconds": 120,
-      "js_selector_timeout_ms": 45000,
-      "baseline_max_errors": 10
+      "enabled": false,
+      "js_render": "auto",
+      "js_wait_after_ms": 4000,
+      "request_timeout_seconds": 60,
+      "baseline_max_errors": 15
     }
   ]
 }
