@@ -38,12 +38,10 @@ def _try_import(*names):
 
 fitz = _try_import("pymupdf", "fitz")
 
-# RapidOCR (last fallback)
 _rapidocr_mod = _try_import("rapidocr_onnxruntime", "rapidocr")
 RapidOCR = getattr(_rapidocr_mod, "RapidOCR", None) if _rapidocr_mod is not None else None
 _RAPIDOCR_AVAILABLE = RapidOCR is not None
 
-# PaddleOCR (primary Hindi/Devanagari fallback after Gemini)
 try:
     from paddleocr import PaddleOCR
     _PADDLEOCR_AVAILABLE = True
@@ -51,7 +49,6 @@ except ImportError:
     PaddleOCR = None
     _PADDLEOCR_AVAILABLE = False
 
-# Tesseract (secondary fallback)
 pytesseract = _try_import("pytesseract")
 _PIL_Image = _try_import("PIL.Image")
 _TESSERACT_AVAILABLE = pytesseract is not None and _PIL_Image is not None
@@ -502,14 +499,21 @@ def _resolve_title(item):
     context = clean_text(item.get("context") or "", 200)
     url = item.get("url", "")
 
-    def _ok(v): return (v and not _is_generic_title(v) and not _is_language_selector(v) and not _looks_like_menu_dump(v) and not _is_garbage_title(v))
+    def _ok(v):
+        if not v: return False
+        # NEW FIX: Reject URLs as titles (prevents "https://..." appearing as notice title)
+        if v.startswith("http://") or v.startswith("https://"): return False
+        return (not _is_generic_title(v) and not _is_language_selector(v)
+                and not _looks_like_menu_dump(v) and not _is_garbage_title(v))
     if _ok(explicit): return explicit
     if _ok(anchor): return anchor
     for candidate in (explicit, anchor):
         if candidate and (_looks_like_menu_dump(candidate) or _is_garbage_title(candidate)):
             cleaned = _cleanup_menu_dump_title(candidate, url=url, explicit="")
             if cleaned and cleaned != candidate and _ok(cleaned): return cleaned
-    if context and not _is_generic_title(context) and not _is_language_selector(context) and not _looks_like_menu_dump(context): return context[:200]
+    if context and not _is_generic_title(context) and not _is_language_selector(context) and not _looks_like_menu_dump(context):
+        if not (context.startswith("http://") or context.startswith("https://")):
+            return context[:200]
     slug = _title_from_url(url, min_len=5)
     if slug: return slug
     return "Notice"
@@ -1272,6 +1276,11 @@ def _extract_upload_date(anchor_tag):
             if m:
                 ds = _extract_full_dates(m.group(1))
                 if ds: return max(ds)
+        # NEW FIX: Fallback — extract any valid full date from context (for sites like VBU where
+        # the date is shown in a table column without "Date:" prefix)
+        all_dates = _extract_full_dates(text)
+        if all_dates:
+            return max(all_dates)
     except Exception: pass
     return None
 
@@ -1429,7 +1438,13 @@ def canonical_identity_url(raw):
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", urlencode(pairs, doseq=True), p.fragment))
 
 
-def same_host(a, b): return urlparse(a).netloc.lower() == urlparse(b).netloc.lower()
+def _normalize_host(host):
+    h = (host or "").lower().strip()
+    if h.startswith("www."): h = h[4:]
+    return h
+
+
+def same_host(a, b): return _normalize_host(urlparse(a).netloc) == _normalize_host(urlparse(b).netloc)
 
 
 def is_http_url(url): return urlparse(url).scheme in {"http", "https"}
@@ -1526,6 +1541,10 @@ def get_config():
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
         try: site["js_selector_timeout_ms"] = max(1000, min(60000, int(site.get("js_selector_timeout_ms", 10000))))
         except (TypeError, ValueError, OverflowError): site["js_selector_timeout_ms"] = 10000
+        # NEW: Validate direct_urls list
+        raw_direct = site.get("direct_urls", [])
+        if not isinstance(raw_direct, list): raw_direct = []
+        site["direct_urls"] = [str(u).strip() for u in raw_direct if isinstance(u, (str, bytes)) and str(u).strip()]
         enabled.append(site)
     cfg["websites"] = enabled
     global _SITE_VERIFY_SSL_BY_ID, _SITE_TIMEOUT_BY_ID
@@ -1932,7 +1951,23 @@ def discover_site(session, site, scan):
     max_pagination_per_archive = scan.get("max_pagination_per_archive", 3)
 
     discovery_keywords = list(dict.fromkeys(scan["discovery_keywords"] + site.get("discovery_keywords", []) + scan["keywords"]))
-    queue = [base_url]
+
+    # NEW: Direct URLs from config (e.g., VBU's /notice/Notice) — processed first, before generic discovery
+    direct_urls = []
+    for raw_url in (site.get("direct_urls") or []):
+        if not raw_url or not isinstance(raw_url, str): continue
+        canon = _canonical_spa_url(raw_url.strip())
+        if not is_http_url(canon):
+            print(f"[DIRECT-URL-SKIP] Invalid URL: {raw_url[:100]}", file=sys.stderr)
+            continue
+        if not same_host(base_url, canon):
+            print(f"[DIRECT-URL-SKIP] Off-host URL (base={base_url}, direct={canon}): {raw_url[:100]}", file=sys.stderr)
+            continue
+        direct_urls.append(canon)
+    if direct_urls:
+        print(f"[DIRECT-URLS] {site['name']}: {len(direct_urls)} priority URL(s) will be scanned first", file=sys.stderr)
+
+    queue = list(direct_urls) + [base_url]
     queue.extend(discover_from_sitemap(session, base_url, effective_scan))
     visited = set()
     archive_visited_count = 0
@@ -1944,7 +1979,7 @@ def discover_site(session, site, scan):
     normal_visited_count = 0
     js_render_count = 0
 
-    while queue and len(visited) < total_budget:
+    while queue and len(visited) < total_budget + len(direct_urls):
         page = _canonical_spa_url(queue.pop(0))
         if page in visited or not same_host(base_url, page): continue
         is_archive = _is_archive_url(page)
