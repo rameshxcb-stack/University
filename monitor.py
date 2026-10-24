@@ -756,6 +756,21 @@ def _pdf_content_fingerprint(content):
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
 
+# FIX #3 (part 1): HTML content hash helper for non-PDF dedup.
+# Uses a normalised title + first 300 chars of context so WordPress multi-URL
+# notices (page + wp-content/uploads PDF + wrapper) dedup correctly.
+def _html_content_hash(title, context):
+    if not title: return ""
+    try:
+        norm_title = re.sub(r"\s+", " ", (title or "").strip().casefold())[:200]
+        norm_context = re.sub(r"\s+", " ", (context or "")[:300].strip().casefold())
+        combined = f"{norm_title}|{norm_context}"
+        if len(combined) < 30: return ""
+        return "html-v1:" + hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
 def _parse_utc_timestamp(value):
     if not value: return None
     try:
@@ -843,7 +858,11 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     if old_c and new_c and old_c != new_c:
         distance = Levenshtein.distance(old_c, new_c)
         ratio = fuzz.ratio(old_c, new_c)
-        if distance >= 30 and ratio < 78: return True
+        # FIX #1: Raised context threshold from (30, 78) to (100, 55).
+        # WordPress dynamic sidebars/footers were triggering RE-PROCESS for every
+        # sent notice on every 14-day cycle. 100/55 kills the noise while still
+        # catching genuine notice-body changes (revised dates, extended deadlines).
+        if distance >= 100 and ratio < 55: return True
     return False
 
 
@@ -1681,7 +1700,13 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
-    if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
+    # FIX #4: Truncate context to 200 chars before classification to avoid
+    # inconsistent results when WordPress sidebars/footers change between runs.
+    # Only the first 200 chars of context (the actual notice row) should drive
+    # classification, not the surrounding dynamic chrome.
+    trimmed_context = (record.get("context") or "")[:200]
+
+    if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), trimmed_context, record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
 
     title_for_exclusion = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
     if _matched_excluded_title_signal(title_for_exclusion, excluded_signals): return False
@@ -1780,18 +1805,36 @@ def find_fuzzy_match(site_items, title, url):
     return None
 
 
+# FIX #3 (part 2): Extended to also check HTML content hash for non-PDF records.
+# This catches "same notice, different URL" cases (e.g. BAU WordPress page +
+# wp-content/uploads PDF + wrapper page). PDF dedup path is unchanged.
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     new_site = record.get("site_id")
-    if not new_hash or not new_kind or not new_site: return None
+
+    # Fallback: if record is not a PDF (no pdf_hash), compute HTML content hash.
+    if not new_hash or not new_kind:
+        html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
+        if not html_hash: return None
+        new_hash = html_hash
+        new_kind = "html-v1"
+
+    if not new_site: return None
     new_title_norm = _normalize_title(record.get("title", ""))
     for other_iid, other in state.get("items", {}).items():
         if other_iid == exclude_iid or not isinstance(other, dict): continue
         if other.get("status") != "sent": continue
         if other.get("site_id") != new_site: continue
-        if other.get("pdf_hash_kind") != new_kind: continue
-        if other.get("pdf_hash") != new_hash: continue
+
+        if new_kind == "html-v1":
+            other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
+        else:
+            other_hash = other.get("pdf_hash")
+            if other.get("pdf_hash_kind") != new_kind: continue
+
+        if not other_hash or other_hash != new_hash: continue
+
         other_title_norm = _normalize_title(other.get("title", ""))
         if new_title_norm and other_title_norm:
             if fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 70: continue
@@ -1935,6 +1978,9 @@ def _robots_allowed(session, url, timeout):
         parser = RobotFileParser()
         robots_url = origin + "/robots.txt"
         try:
+            # FIX (SKMU): Raised robots.txt timeout cap from 10s to 45s + added
+            # failure logging. Slow TLS handshakes (SKMU) were silently timing out
+            # in <10s, causing robots to be treated as None → page skipped.
             response = session.get(robots_url, timeout=min(45, timeout), allow_redirects=True)
             if response.status_code < 400 and response.text:
                 parser.set_url(robots_url)
@@ -2125,11 +2171,6 @@ def discover_site(session, site, scan):
 
 
 def scan_site(site, scan): return discover_site(make_session(), site, scan)
-
-
-# ============================================================
-# ==== BELOW THIS POINT — EVERYTHING WAS MISSING ====
-# ============================================================
 
 
 def _extract_pdf_text_plumber(content):
@@ -3484,11 +3525,25 @@ def main():
                             session = make_session()
                             changed, new_etag, new_lm = _check_url_changed(session, candidate["url"], record, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
                             if changed:
-                                print(f"[UPDATE] Content changed: {candidate['url'][:80]}", file=sys.stderr)
-                                record["status"] = "pending"
-                                record.pop("terminal_at", None)
-                                record["attempts"] = 0; record["last_error"] = None; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0; record["classification"] = None; record["summary"] = ""
-                                record.pop("pdf_summary_hint", None)
+                                # FIX #2: For already-sent HTML pages, only re-process when
+                                # the TITLE changed significantly (fuzzy < 90). WordPress
+                                # sidebars/footers update ETag/LM every few minutes and were
+                                # causing every sent item to re-send on the 14-day cycle.
+                                # PDF items keep the original behavior (any change → re-process)
+                                # because PDF content changes are usually genuine.
+                                should_reprocess = True
+                                if record.get("status") == "sent" and not record.get("is_pdf", False):
+                                    old_title = (record.get("title") or "").strip()
+                                    new_title = (candidate.get("title") or "").strip()
+                                    if old_title and new_title and fuzz.token_sort_ratio(old_title.lower(), new_title.lower()) >= 90:
+                                        should_reprocess = False
+                                        print(f"[SKIP-ETAG] Same title, HTML content changed (sidebar noise): {candidate['url'][:80]}", file=sys.stderr)
+                                if should_reprocess:
+                                    print(f"[UPDATE] Content changed: {candidate['url'][:80]}", file=sys.stderr)
+                                    record["status"] = "pending"
+                                    record.pop("terminal_at", None)
+                                    record["attempts"] = 0; record["last_error"] = None; record["pdf_extracted"] = False; record["pdf_text"] = ""; record["pdf_attempts"] = 0; record["classification"] = None; record["summary"] = ""
+                                    record.pop("pdf_summary_hint", None)
                             if new_etag: record["etag"] = new_etag
                             if new_lm: record["last_modified"] = new_lm
                             record["last_content_check_at"] = utc_now()
@@ -3640,7 +3695,7 @@ def main():
         if duplicate_title:
             print(f"[DEDUP-HASH] {record.get('title', '')[:60]} matches sent notice: {duplicate_title[:60]}", file=sys.stderr)
             record["status"] = "ignored"
-            record["last_error"] = f"Duplicate PDF fingerprint of sent notice: {duplicate_title[:120]}"
+            record["last_error"] = f"Duplicate PDF/content fingerprint of sent notice: {duplicate_title[:120]}"
             state.setdefault("metrics", {})["duplicate_rejects"] = int(state.setdefault("metrics", {}).get("duplicate_rejects", 0)) + 1
             continue
         full_message = format_message(site, record, record.get("classification"))
