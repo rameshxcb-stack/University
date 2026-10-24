@@ -36,18 +36,19 @@
     {
       "id": "vbu-hazaribagh",
       "name": "Vinoba Bhave University, Hazaribagh",
-      "url": "https://vbu.ac.in/",
+      "url": "https://www.vbu.ac.in/",
       "enabled": true,
       "verify_ssl": false,
       "js_render": "always",
-      "js_wait_after_ms": 4000,
-      "js_wait_for_selector": "ng-view, .notice, .notice-list, table",
-      "js_selector_timeout_ms": 20000,
+      "js_wait_after_ms": 8000,
+      "js_wait_for_selector": "table, .notice, .notice-list, ng-view, a[href*='.pdf']",
+      "js_selector_timeout_ms": 25000,
       "js_scroll_bottom": true,
       "baseline_max_errors": 15,
       "request_timeout_seconds": 60,
+      "direct_urls": ["https://www.vbu.ac.in/notice/Notice"],
       "keywords": ["notice", "exam", "result", "admission", "syllabus", "timetable", "revaluation"],
-      "discovery_keywords": ["notice", "exam", "result", "admission", "revaluation"]
+      "discovery_keywords": ["notice", "exam", "result", "admission", "revaluation", "merit", "verification"]
     },
     {
       "id": "ranchi-university",
