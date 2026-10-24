@@ -1,38 +1,28 @@
-# ---------------------------------------------------------------------------
-# HTTP / HTML parsing
-# ---------------------------------------------------------------------------
+# HTTP / HTML
 requests>=2.32,<3
 beautifulsoup4>=4.12,<5
 lxml>=5.3,<7
 
-# ---------------------------------------------------------------------------
-# PDF text extraction
-# ---------------------------------------------------------------------------
+# PDF
 pdfplumber>=0.11,<1
 PyMuPDF>=1.24,<2
 
-# ---------------------------------------------------------------------------
-# OCR — Devanagari (Hindi + English) support
-# ---------------------------------------------------------------------------
+# OCR
 rapidocr-onnxruntime>=1.4,<2
 onnxruntime>=1.17
 pytesseract>=0.3.10,<1
 Pillow>=10.0,<12
 
-# PaddleOCR — Best Hindi/Devanagari accuracy, free & offline
+# PaddleOCR (Devanagari)
 paddlepaddle==2.6.2
 paddleocr==2.7.3
 opencv-python-headless==4.9.0.80
 
-# numpy — pinned <1.27 because paddlepaddle 2.6.x requires this
-numpy<1.27
+# numpy — EXACT pin (Paddle 2.6.2 requires this)
+numpy==1.26.4
 
-# ---------------------------------------------------------------------------
-# Fuzzy matching / deduplication
-# ---------------------------------------------------------------------------
+# Fuzzy
 rapidfuzz>=3.9,<4
 
-# ---------------------------------------------------------------------------
-# JavaScript rendering (REQUIRED for VBU / AISECT / CUJ / IIT ISM etc.)
-# ---------------------------------------------------------------------------
+# JS rendering
 playwright>=1.40,<2
