@@ -46,6 +46,7 @@
       "js_scroll_bottom": true,
       "baseline_max_errors": 15,
       "request_timeout_seconds": 60,
+      "max_items_per_site": 200,
       "direct_urls": ["https://www.vbu.ac.in/notice/Notice"],
       "keywords": ["notice", "exam", "result", "admission", "syllabus", "timetable", "revaluation"],
       "discovery_keywords": ["notice", "exam", "result", "admission", "revaluation", "merit", "verification"]
