@@ -106,7 +106,7 @@ JS_RENDER_TIMEOUT_MS = int(os.getenv("JS_RENDER_TIMEOUT_MS", "25000"))
 JS_WAIT_UNTIL = os.getenv("JS_WAIT_UNTIL", "domcontentloaded").strip() or "domcontentloaded"
 JS_THIN_TEXT_THRESHOLD = int(os.getenv("JS_THIN_TEXT_THRESHOLD", "200"))
 JS_MAX_RENDER_PER_SITE = int(os.getenv("JS_MAX_RENDER_PER_SITE", "40"))
-JS_WAIT_AFTER_MS = max(0, min(30000, int(os.getenv("JS_WAIT_AFTER_MS", "2500"))))
+JS_WAIT_AFTER_MS = max(0, min(60000, int(os.getenv("JS_WAIT_AFTER_MS", "2500"))))
 JS_SCROLL_TO_BOTTOM = os.getenv("JS_SCROLL_TO_BOTTOM", "false").strip().lower() == "true"
 JS_WAIT_FOR_SELECTOR_DEFAULT = os.getenv("JS_WAIT_FOR_SELECTOR_DEFAULT", "").strip()
 
@@ -318,10 +318,10 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
     wait_until = wait_until or JS_WAIT_UNTIL
     if wait_until == "networkidle": wait_until = "domcontentloaded"
     wait_after_ms = JS_WAIT_AFTER_MS if wait_after_ms is None else wait_after_ms
-    try: wait_after_ms = max(0, min(30000, int(wait_after_ms)))
+    try: wait_after_ms = max(0, min(60000, int(wait_after_ms)))
     except (TypeError, ValueError): wait_after_ms = JS_WAIT_AFTER_MS
     selector = str(wait_for_selector or JS_WAIT_FOR_SELECTOR_DEFAULT or "").strip()
-    try: selector_timeout_ms = max(1000, min(60000, int(selector_timeout_ms or 10000)))
+    try: selector_timeout_ms = max(1000, min(90000, int(selector_timeout_ms or 10000)))
     except (TypeError, ValueError, OverflowError): selector_timeout_ms = 10000
 
     try:
@@ -358,7 +358,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
                 try:
                     html_content = page.content()
                     if _has_unrendered_angular_templates(html_content):
-                        page.wait_for_timeout(min(2000, max(500, wait_after_ms)))
+                        page.wait_for_timeout(min(3000, max(500, wait_after_ms)))
                         html_content = page.content()
                 except Exception as exc: return None, url, f"playwright_content_error:{type(exc).__name__}"
                 if html_content:
@@ -501,7 +501,6 @@ def _resolve_title(item):
 
     def _ok(v):
         if not v: return False
-        # NEW FIX: Reject URLs as titles (prevents "https://..." appearing as notice title)
         if v.startswith("http://") or v.startswith("https://"): return False
         return (not _is_generic_title(v) and not _is_language_selector(v)
                 and not _looks_like_menu_dump(v) and not _is_garbage_title(v))
@@ -576,7 +575,7 @@ def _extract_pdf_text_paddleocr(content):
                 else:
                     from PIL import Image
                     img = np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
-                    img = img[:, :, ::-1]  # RGB -> BGR for PaddleOCR
+                    img = img[:, :, ::-1]  # RGB -> BGR
                 result = ocr.ocr(img, cls=True)
                 if result and result[0]:
                     for line in result[0]:
@@ -924,6 +923,9 @@ _NON_NOTICE_URL_PATTERNS = [
     re.compile(r"/department/?$", re.I), re.compile(r"/search(/|$)", re.I), re.compile(r"[?&]page=\d+", re.I),
     re.compile(r"[?&]paged=\d+", re.I), re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)(/|$).*(past[-_]?notices|whats[-_]?new|archive|category|notice[-_]?category|document[-_]?category|search)", re.I),
     re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)/?$", re.I),
+    # NEW: Block login/admin/auth pages
+    re.compile(r"/notice/(login|adminlogin|stdlogin|admin|auth|register)(/|$)", re.I),
+    re.compile(r"/(login|signin|sign-in|register|logout)(/|$)", re.I),
 ]
 _ARCHIVE_URL_PATTERNS = [
     re.compile(r"/past-notices(/|$)", re.I), re.compile(r"/past_notices(/|$)", re.I), re.compile(r"/whats-new(/|$)", re.I),
@@ -1276,11 +1278,9 @@ def _extract_upload_date(anchor_tag):
             if m:
                 ds = _extract_full_dates(m.group(1))
                 if ds: return max(ds)
-        # NEW FIX: Fallback — extract any valid full date from context (for sites like VBU where
-        # the date is shown in a table column without "Date:" prefix)
+        # Fallback: any valid full date from parent context
         all_dates = _extract_full_dates(text)
-        if all_dates:
-            return max(all_dates)
+        if all_dates: return max(all_dates)
     except Exception: pass
     return None
 
@@ -1532,16 +1532,15 @@ def get_config():
         raw_verify_ssl = site.get("verify_ssl", True)
         if isinstance(raw_verify_ssl, str): site["verify_ssl"] = raw_verify_ssl.strip().casefold() not in {"0", "false", "no", "off"}
         else: site["verify_ssl"] = bool(raw_verify_ssl)
-        try: site["js_wait_after_ms"] = max(0, min(30000, int(site.get("js_wait_after_ms", JS_WAIT_AFTER_MS))))
+        try: site["js_wait_after_ms"] = max(0, min(60000, int(site.get("js_wait_after_ms", JS_WAIT_AFTER_MS))))
         except (TypeError, ValueError, OverflowError): site["js_wait_after_ms"] = JS_WAIT_AFTER_MS
         raw_scroll = site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM)
         if isinstance(raw_scroll, str): site["js_scroll_bottom"] = raw_scroll.strip().lower() in {"1", "true", "yes", "on"}
         else: site["js_scroll_bottom"] = bool(raw_scroll)
         raw_selector = site.get("js_wait_for_selector", JS_WAIT_FOR_SELECTOR_DEFAULT)
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
-        try: site["js_selector_timeout_ms"] = max(1000, min(60000, int(site.get("js_selector_timeout_ms", 10000))))
+        try: site["js_selector_timeout_ms"] = max(1000, min(90000, int(site.get("js_selector_timeout_ms", 10000))))
         except (TypeError, ValueError, OverflowError): site["js_selector_timeout_ms"] = 10000
-        # NEW: Validate direct_urls list
         raw_direct = site.get("direct_urls", [])
         if not isinstance(raw_direct, list): raw_direct = []
         site["direct_urls"] = [str(u).strip() for u in raw_direct if isinstance(u, (str, bytes)) and str(u).strip()]
@@ -1665,6 +1664,10 @@ def pending_priority(record, keywords, now=None):
 
 _PRECLASS_STRONG = (
     "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "result", "notice", "notification", "examination", "exam form", "exam schedule", "exam programme", "marksheet", "merit", "advertisement", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परीक्षा फॉर्म",
+    # NEW: recruitment titles that were being filtered
+    "dy. director", "deputy director", "principal", "associate dean", "backlog",
+    "on contractual basis", "on contract basis", "for the post of",
+    "अनुबंध के आधार पर", "पद के लिए",
 )
 _PRECLASS_NAV_ONLY = ("photo gallery", "video gallery", "site map", "web policies", "screen reader", "feedback", "anti-ragging", "grievance cell")
 _DEFAULT_EXCLUDED_TITLE_SIGNALS = ("gst return", "income tax", "annual report", "balance sheet", "minutes of meeting", "right to information", "rti application")
@@ -1697,9 +1700,10 @@ def _keyword_pre_classify(record, excluded_signals=None):
         date_prefixed = bool(re.match(r'^\s*\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b', title))
         if not date_prefixed:
             strong_notice_patterns = [
-                r'\b(?:admission|result|admit card|answer key|examination|revaluation|scholarship|timetable|syllabus|recruitment|tender|counselling|registration|convocation|migration|interview|appointment|apprentice|goods|product|services|supply|purchase|installation|procurement|quotation|bid|rfp|eoi|nit|camc|amc|kva|equipment|machinery|hardware|software|panel|webinar|workshop|seminar|conference|symposium|ceremony|graduation|colloquium|conclave)\b',
+                r'\b(?:admission|result|admit card|answer key|examination|revaluation|scholarship|timetable|syllabus|recruitment|tender|counselling|registration|convocation|migration|interview|appointment|apprentice|goods|product|services|supply|purchase|installation|procurement|quotation|bid|rfp|eoi|nit|camc|amc|kva|equipment|machinery|hardware|software|panel|webinar|workshop|seminar|conference|symposium|ceremony|graduation|colloquium|conclave|principal|director|dean)\b',
                 r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
                 r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
+                r'\b(?:advertisement|advt\.?)\s+for\s+the\s+post\b',
             ]
             if not any(re.search(p, title) for p in strong_notice_patterns):
                 print(f"[NAV-FILTER] long-no-notice: {title[:80]}", file=sys.stderr)
@@ -1804,6 +1808,13 @@ def extract_candidates(html_text, page_url, site, scan):
     keywords = list(dict.fromkeys(scan["keywords"] + site.get("keywords", [])))
     out = []
     seen = set()
+
+    # NEW: Handle <a ng-href="..."> (AngularJS) — copy ng-href to href for processing
+    for a in soup.find_all("a", attrs={"ng-href": True}):
+        ng_href = (a.get("ng-href") or "").strip()
+        if not ng_href or ng_href.startswith("{{"): continue
+        if not a.get("href"):
+            a["href"] = ng_href
 
     for a in soup.find_all("a", href=True):
         href = _canonical_spa_url(urljoin(page_url, a.get("href", "")))
@@ -1952,7 +1963,7 @@ def discover_site(session, site, scan):
 
     discovery_keywords = list(dict.fromkeys(scan["discovery_keywords"] + site.get("discovery_keywords", []) + scan["keywords"]))
 
-    # NEW: Direct URLs from config (e.g., VBU's /notice/Notice) — processed first, before generic discovery
+    # NEW: Direct URLs from config — processed first
     direct_urls = []
     for raw_url in (site.get("direct_urls") or []):
         if not raw_url or not isinstance(raw_url, str): continue
@@ -1961,7 +1972,7 @@ def discover_site(session, site, scan):
             print(f"[DIRECT-URL-SKIP] Invalid URL: {raw_url[:100]}", file=sys.stderr)
             continue
         if not same_host(base_url, canon):
-            print(f"[DIRECT-URL-SKIP] Off-host URL (base={base_url}, direct={canon}): {raw_url[:100]}", file=sys.stderr)
+            print(f"[DIRECT-URL-SKIP] Off-host URL: {raw_url[:100]}", file=sys.stderr)
             continue
         direct_urls.append(canon)
     if direct_urls:
@@ -1984,7 +1995,7 @@ def discover_site(session, site, scan):
         if page in visited or not same_host(base_url, page): continue
         is_archive = _is_archive_url(page)
         if is_archive and archive_visited_count >= max_archive_pages: continue
-        if not is_archive and normal_visited_count >= max_pages: continue
+        if not is_archive and normal_visited_count >= max_pages + len(direct_urls): continue
         visited.add(page)
 
         if is_archive:
