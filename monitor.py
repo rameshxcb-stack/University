@@ -329,7 +329,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
             try:
                 context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=True, extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
-                # FIX #1: Removed context.route(...) — VBU AngularJS needs images/fonts/media to load
+                # VBU fix: context.route(...) removed — AngularJS needs images/fonts/media
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
                 try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
@@ -756,9 +756,7 @@ def _pdf_content_fingerprint(content):
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
 
-# FIX #3 (part 1): HTML content hash helper for non-PDF dedup.
-# Uses a normalised title + first 300 chars of context so WordPress multi-URL
-# notices (page + wp-content/uploads PDF + wrapper) dedup correctly.
+# Fix 3 (part 1): HTML content hash helper for non-PDF dedup.
 def _html_content_hash(title, context):
     if not title: return ""
     try:
@@ -858,10 +856,7 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     if old_c and new_c and old_c != new_c:
         distance = Levenshtein.distance(old_c, new_c)
         ratio = fuzz.ratio(old_c, new_c)
-        # FIX #1: Raised context threshold from (30, 78) to (100, 55).
-        # WordPress dynamic sidebars/footers were triggering RE-PROCESS for every
-        # sent notice on every 14-day cycle. 100/55 kills the noise while still
-        # catching genuine notice-body changes (revised dates, extended deadlines).
+        # Fix 1: 100/55 threshold (raised from 30/78 to kill WordPress sidebar noise)
         if distance >= 100 and ratio < 55: return True
     return False
 
@@ -1700,10 +1695,7 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
-    # FIX #4: Truncate context to 200 chars before classification to avoid
-    # inconsistent results when WordPress sidebars/footers change between runs.
-    # Only the first 200 chars of context (the actual notice row) should drive
-    # classification, not the surrounding dynamic chrome.
+    # Fix 4: Trim context to 200 chars before classification (WordPress sidebar noise)
     trimmed_context = (record.get("context") or "")[:200]
 
     if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), trimmed_context, record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
@@ -1805,15 +1797,12 @@ def find_fuzzy_match(site_items, title, url):
     return None
 
 
-# FIX #3 (part 2): Extended to also check HTML content hash for non-PDF records.
-# This catches "same notice, different URL" cases (e.g. BAU WordPress page +
-# wp-content/uploads PDF + wrapper page). PDF dedup path is unchanged.
+# Fix 3 (part 2): Extended to also check HTML content hash for non-PDF records
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     new_site = record.get("site_id")
 
-    # Fallback: if record is not a PDF (no pdf_hash), compute HTML content hash.
     if not new_hash or not new_kind:
         html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
         if not html_hash: return None
@@ -1978,9 +1967,7 @@ def _robots_allowed(session, url, timeout):
         parser = RobotFileParser()
         robots_url = origin + "/robots.txt"
         try:
-            # FIX (SKMU): Raised robots.txt timeout cap from 10s to 45s + added
-            # failure logging. Slow TLS handshakes (SKMU) were silently timing out
-            # in <10s, causing robots to be treated as None → page skipped.
+            # SKMU fix: 10 → 45 sec + failure logging
             response = session.get(robots_url, timeout=min(45, timeout), allow_redirects=True)
             if response.status_code < 400 and response.text:
                 parser.set_url(robots_url)
@@ -2151,7 +2138,8 @@ def discover_site(session, site, scan):
             for a in soup.find_all("a", href=True):
                 href = _canonical_spa_url(urljoin(final_url, a.get("href", "")))
                 if (not is_http_url(href) or not same_host(base_url, href) or href in visited or href in queue): continue
-                if re.search(r"/(login|logout|register|signin|sign-in|search|tag)(/|$)", href, re.I): continue
+                # CHANGE 4 (NEW): added adminlogin|stdlogin to regex
+                if re.search(r"/(login|adminlogin|stdlogin|logout|register|signin|sign-in|search|tag)(/|$)", href, re.I): continue
                 if _is_archive_url(href):
                     if len(queue) < total_budget * 3: queue.append(href)
                     continue
@@ -3525,12 +3513,7 @@ def main():
                             session = make_session()
                             changed, new_etag, new_lm = _check_url_changed(session, candidate["url"], record, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
                             if changed:
-                                # FIX #2: For already-sent HTML pages, only re-process when
-                                # the TITLE changed significantly (fuzzy < 90). WordPress
-                                # sidebars/footers update ETag/LM every few minutes and were
-                                # causing every sent item to re-send on the 14-day cycle.
-                                # PDF items keep the original behavior (any change → re-process)
-                                # because PDF content changes are usually genuine.
+                                # Fix 2: For sent HTML pages, only re-process if TITLE changed significantly
                                 should_reprocess = True
                                 if record.get("status") == "sent" and not record.get("is_pdf", False):
                                     old_title = (record.get("title") or "").strip()
@@ -3574,7 +3557,8 @@ def main():
     state["initialized"] = all(site_state(state, site["id"])["baseline_complete"] for site in cfg["websites"])
     pending = list({iid: record for iid, record in pending}.items())
     pending.sort(key=lambda pair: pending_priority(pair[1], scan["keywords"]), reverse=True)
-    max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 45)
+    # CHANGE 3 (NEW): raised cap 45 → 60
+    max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 60)
     pending = pending[:max_items_this_run]
 
     batch_size = scan["gemini_batch_size"]
