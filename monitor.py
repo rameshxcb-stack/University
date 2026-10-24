@@ -329,7 +329,6 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
             try:
                 context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=True, extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
-                # VBU fix: context.route(...) removed — AngularJS needs images/fonts/media
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
                 try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
@@ -756,7 +755,6 @@ def _pdf_content_fingerprint(content):
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
 
-# Fix 3 (part 1): HTML content hash helper for non-PDF dedup.
 def _html_content_hash(title, context):
     if not title: return ""
     try:
@@ -856,7 +854,6 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     if old_c and new_c and old_c != new_c:
         distance = Levenshtein.distance(old_c, new_c)
         ratio = fuzz.ratio(old_c, new_c)
-        # Fix 1: 100/55 threshold (raised from 30/78 to kill WordPress sidebar noise)
         if distance >= 100 and ratio < 55: return True
     return False
 
@@ -1365,15 +1362,25 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
                 print(f"[STALE-SESSION] Old session {session_start}-{session_end}", file=sys.stderr)
                 return True
 
-    years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_full)]
-    if years:
-        max_year = max(years)
-        try:
-            latest_possible = datetime(max_year, 12, 31, tzinfo=timezone.utc)
-            if latest_possible < cutoff:
-                print(f"[STALE-YEAR] Latest possible for {max_year} ({latest_possible.date()}) is older than {STALE_NOTICE_DAYS} days", file=sys.stderr)
-                return True
-        except (ValueError, OverflowError): pass
+    # FIX 2 (2-line): Skip year-only stale check when title has batch/session reference.
+    # "Batch 2023-24" or "Session 2020-21" identifies the program COHORT, not the
+    # publication date. Students in old batches are still active in 5-6 year programs,
+    # so notices about them are current. Full date check above (title/context/pdf) still
+    # runs and catches notices with SPECIFIC old dates.
+    batch_session_signal = bool(re.search(
+        r'\b(?:batch|session)\s*[:\-]?\s*\d{2,4}|\b20\d{2}\s*[-/–—]\s*(?:20)?\d{2,4}\b',
+        normalized_title, re.I
+    ))
+    if not batch_session_signal:
+        years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_full)]
+        if years:
+            max_year = max(years)
+            try:
+                latest_possible = datetime(max_year, 12, 31, tzinfo=timezone.utc)
+                if latest_possible < cutoff:
+                    print(f"[STALE-YEAR] Latest possible for {max_year} ({latest_possible.date()}) is older than {STALE_NOTICE_DAYS} days", file=sys.stderr)
+                    return True
+            except (ValueError, OverflowError): pass
 
     return False
 
@@ -1695,10 +1702,18 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
-    # Fix 4: Trim context to 200 chars before classification (WordPress sidebar noise)
-    trimmed_context = (record.get("context") or "")[:200]
-
-    if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), trimmed_context, record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")): return False
+    # FIX 1 (2-line): Use empty context in staleness check. WordPress sidebar noise
+    # and truncated context (past 200 chars) can produce false "stale" results, causing
+    # legit notices (e.g., "Advertisement for Dy. Director") to be ignored.
+    # The main() loop already checks full context BEFORE pre_classify runs (step 1),
+    # so genuinely stale notices with old dates in context are still caught there.
+    if _is_stale_notice(
+        record.get("explicit_title") or record.get("title", ""),
+        "",  # empty context - no sidebar noise, no truncation
+        record.get("url", ""),
+        upload_date=_parse_upload_date(record.get("upload_date")),
+        pdf_text=record.get("pdf_text", "")
+    ): return False
 
     title_for_exclusion = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
     if _matched_excluded_title_signal(title_for_exclusion, excluded_signals): return False
@@ -1797,7 +1812,6 @@ def find_fuzzy_match(site_items, title, url):
     return None
 
 
-# Fix 3 (part 2): Extended to also check HTML content hash for non-PDF records
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
@@ -1967,7 +1981,6 @@ def _robots_allowed(session, url, timeout):
         parser = RobotFileParser()
         robots_url = origin + "/robots.txt"
         try:
-            # SKMU fix: 10 → 45 sec + failure logging
             response = session.get(robots_url, timeout=min(45, timeout), allow_redirects=True)
             if response.status_code < 400 and response.text:
                 parser.set_url(robots_url)
@@ -2138,7 +2151,6 @@ def discover_site(session, site, scan):
             for a in soup.find_all("a", href=True):
                 href = _canonical_spa_url(urljoin(final_url, a.get("href", "")))
                 if (not is_http_url(href) or not same_host(base_url, href) or href in visited or href in queue): continue
-                # CHANGE 4 (NEW): added adminlogin|stdlogin to regex
                 if re.search(r"/(login|adminlogin|stdlogin|logout|register|signin|sign-in|search|tag)(/|$)", href, re.I): continue
                 if _is_archive_url(href):
                     if len(queue) < total_budget * 3: queue.append(href)
@@ -3513,7 +3525,6 @@ def main():
                             session = make_session()
                             changed, new_etag, new_lm = _check_url_changed(session, candidate["url"], record, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
                             if changed:
-                                # Fix 2: For sent HTML pages, only re-process if TITLE changed significantly
                                 should_reprocess = True
                                 if record.get("status") == "sent" and not record.get("is_pdf", False):
                                     old_title = (record.get("title") or "").strip()
@@ -3557,7 +3568,6 @@ def main():
     state["initialized"] = all(site_state(state, site["id"])["baseline_complete"] for site in cfg["websites"])
     pending = list({iid: record for iid, record in pending}.items())
     pending.sort(key=lambda pair: pending_priority(pair[1], scan["keywords"]), reverse=True)
-    # CHANGE 3 (NEW): raised cap 45 → 60
     max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 60)
     pending = pending[:max_items_this_run]
 
