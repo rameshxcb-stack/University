@@ -93,6 +93,7 @@ OCR_DPI = int(os.getenv("OCR_DPI", "250"))
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "200"))
 OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "2"))
 _OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "4"))
+MAX_PDF_OCR_SECONDS = int(os.getenv("MAX_PDF_OCR_SECONDS", "120"))
 
 TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").strip().lower() == "true"
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "hin+eng").strip() or "hin+eng"
@@ -152,6 +153,11 @@ STRONG_KEYWORDS = [
 
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
 _RUNTIME_PDF_CACHE: Dict[str, bytes] = {}
+_RUNTIME_PDF_CACHE_LOCK = threading.Lock()
+_OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
+_OCR_CONTENT_CACHE_MAX_ITEMS = 30
+_OCR_CONTENT_LOCK = threading.Lock()
+
 _GEMINI_API_KEY = ""
 _GEMINI_KEYS_POOL: List[str] = []
 _GEMINI_KEY_INDEX: int = 0
@@ -165,6 +171,8 @@ _GEMINI_QUOTA_EXHAUSTED: bool = False
 
 _RAPIDOCR_INSTANCE = None
 _PADDLEOCR_INSTANCE = None
+_OCR_INIT_LOCK = threading.Lock()
+
 _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
 _JS_RENDER_COUNT = 0
@@ -369,7 +377,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
 
 
 def _is_devanagari_str(text: str) -> bool:
-    return any("\u0900" <= c <= "\u097F" for c in (text or ""))
+    return any("\u0900" <= c <= "\u097F" and c != "\u0964" for c in (text or ""))
 
 
 def _match_signal(text: str, signal: str) -> bool:
@@ -510,29 +518,33 @@ def _resolve_title(item):
 def _get_rapidocr():
     global _RAPIDOCR_INSTANCE
     if _RAPIDOCR_INSTANCE is None and _RAPIDOCR_AVAILABLE:
-        try:
-            _RAPIDOCR_INSTANCE = RapidOCR(params={"Rec.lang_type": "devanagari"})
-            print("[INFO] RapidOCR initialized with Devanagari model.", file=sys.stderr)
-        except Exception as exc:
-            print(f"[WARN] RapidOCR Devanagari init failed: {exc}", file=sys.stderr)
+        with _OCR_INIT_LOCK:
+            if _RAPIDOCR_INSTANCE is not None: return _RAPIDOCR_INSTANCE
             try:
-                _RAPIDOCR_INSTANCE = RapidOCR()
-                print("[WARN] Falling back to default RapidOCR.", file=sys.stderr)
-            except Exception as exc2:
-                print(f"[WARN] RapidOCR default init failed: {exc2}", file=sys.stderr)
-                return None
+                _RAPIDOCR_INSTANCE = RapidOCR(params={"Rec.lang_type": "devanagari"})
+                print("[INFO] RapidOCR initialized with Devanagari model.", file=sys.stderr)
+            except Exception as exc:
+                print(f"[WARN] RapidOCR Devanagari init failed: {exc}", file=sys.stderr)
+                try:
+                    _RAPIDOCR_INSTANCE = RapidOCR()
+                    print("[WARN] Falling back to default RapidOCR.", file=sys.stderr)
+                except Exception as exc2:
+                    print(f"[WARN] RapidOCR default init failed: {exc2}", file=sys.stderr)
+                    return None
     return _RAPIDOCR_INSTANCE
 
 
 def _get_paddleocr():
     global _PADDLEOCR_INSTANCE
     if _PADDLEOCR_INSTANCE is None and _PADDLEOCR_AVAILABLE:
-        try:
-            _PADDLEOCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="hi", show_log=False, use_gpu=False)
-            print("[INFO] PaddleOCR (Devanagari) initialized.", file=sys.stderr)
-        except Exception as exc:
-            print(f"[WARN] PaddleOCR init failed: {exc}", file=sys.stderr)
-            return None
+        with _OCR_INIT_LOCK:
+            if _PADDLEOCR_INSTANCE is not None: return _PADDLEOCR_INSTANCE
+            try:
+                _PADDLEOCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="hi", show_log=False, use_gpu=False)
+                print("[INFO] PaddleOCR (Devanagari) initialized.", file=sys.stderr)
+            except Exception as exc:
+                print(f"[WARN] PaddleOCR init failed: {exc}", file=sys.stderr)
+                return None
     return _PADDLEOCR_INSTANCE
 
 
@@ -560,6 +572,7 @@ def _extract_pdf_text_paddleocr(content):
                 else:
                     from PIL import Image
                     img = np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+                    img = img[:, :, ::-1]  # RGB -> BGR for PaddleOCR
                 result = ocr.ocr(img, cls=True)
                 if result and result[0]:
                     for line in result[0]:
@@ -574,13 +587,27 @@ def _extract_pdf_text_paddleocr(content):
 
 
 def _cache_put(url, content):
-    if url in _RUNTIME_PDF_CACHE: return
-    if len(_RUNTIME_PDF_CACHE) >= _RUNTIME_PDF_CACHE_MAX_ITEMS:
-        try:
-            first_key = next(iter(_RUNTIME_PDF_CACHE))
-            del _RUNTIME_PDF_CACHE[first_key]
-        except (StopIteration, KeyError): pass
-    _RUNTIME_PDF_CACHE[url] = content
+    with _RUNTIME_PDF_CACHE_LOCK:
+        if url in _RUNTIME_PDF_CACHE: return
+        if len(_RUNTIME_PDF_CACHE) >= _RUNTIME_PDF_CACHE_MAX_ITEMS:
+            try:
+                first_key = next(iter(_RUNTIME_PDF_CACHE))
+                del _RUNTIME_PDF_CACHE[first_key]
+            except (StopIteration, KeyError): pass
+        _RUNTIME_PDF_CACHE[url] = content
+
+
+def _get_ocr_cache(content_hash):
+    with _OCR_CONTENT_LOCK:
+        return _OCR_CONTENT_CACHE.get(content_hash)
+
+
+def _put_ocr_cache(content_hash, cleaned, raw_for_title, method):
+    with _OCR_CONTENT_LOCK:
+        if len(_OCR_CONTENT_CACHE) >= _OCR_CONTENT_CACHE_MAX_ITEMS:
+            try: _OCR_CONTENT_CACHE.pop(next(iter(_OCR_CONTENT_CACHE)))
+            except (StopIteration, KeyError): pass
+        _OCR_CONTENT_CACHE[content_hash] = (cleaned, raw_for_title, method)
 
 
 def _load_gemini_keys():
@@ -1250,13 +1277,6 @@ def _extract_upload_date(anchor_tag):
 
 
 def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
-    """
-    Date-only stale detection based on STALE_NOTICE_DAYS cutoff from now().
-    - Any recent OR future date → SEND (supports "issued 01/10, last date 30/11")
-    - All dates older than cutoff → STALE
-    - No full dates → academic session / year-only fallback
-    - No hardcoded years anywhere
-    """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=STALE_NOTICE_DAYS)
 
@@ -1270,7 +1290,6 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
     normalized_full = full_text.translate(_DEVA_DIGIT_TRANS)
     normalized_pdf_head = pdf_text_str[:500].translate(_DEVA_DIGIT_TRANS)
 
-    # Stage 1: Nav-dump detection
     title_words = normalized_title.split()
     if len(title_words) >= 5:
         first_words = " ".join(title_words[:6]).lower()
@@ -1287,7 +1306,6 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
         if not has_notice_signal and not _is_notice_document_url(url):
             if (mostly_short and (nav_count >= 2 or explicit_nav_dump)) or compact_social_dump: return True
 
-    # Stage 2: Full-date check (15-day cutoff, future dates count as fresh)
     title_dates = _extract_full_dates(normalized_title)
     head_dates = _extract_full_dates(normalized_pdf_head) if normalized_pdf_head else []
     body_dates = _extract_full_dates(normalized_full)
@@ -1307,7 +1325,6 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
         print(f"[STALE] All {len(all_dates)} date(s) older than {STALE_NOTICE_DAYS} days; newest={max_date.date()}", file=sys.stderr)
         return True
 
-    # Stage 3: Academic session (only when no full dates)
     current_year = now.year
     current_academic_start = current_year if now.month >= 7 else current_year - 1
     current_year_update = bool(re.search(
@@ -1327,7 +1344,6 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
                 print(f"[STALE-SESSION] Old session {session_start}-{session_end}", file=sys.stderr)
                 return True
 
-    # Stage 4: Year-only fallback (Dec 31 of max year vs cutoff)
     years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_full)]
     if years:
         max_year = max(years)
@@ -1651,7 +1667,7 @@ def _keyword_pre_classify(record, excluded_signals=None):
     title_for_exclusion = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
     if _matched_excluded_title_signal(title_for_exclusion, excluded_signals): return False
 
-    title = " ".join((record.get("explicit_title") or "", record.get("title") or "", (record.get("pdf_text") or "")[:500])).casefold()
+    title = " ".join((record.get("explicit_title") or "", record.get("title") or "")).casefold()
 
     if _is_generic_title(title): return False
     words = title.split()
@@ -2196,7 +2212,6 @@ def _text_looks_thin(text):
     words = re.findall(r"\w+", stripped, re.UNICODE)
     if len(words) < 20: return True
     if not re.search(r"\d", stripped): return True
-    if stripped.count("\n") < 3: return True
     char_counts = Counter(stripped.lower())
     if char_counts:
         most_common_count = char_counts.most_common(1)[0][1]
@@ -2287,12 +2302,7 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
     return better_title, summary
 
 
-def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
-    """
-    OCR pipeline: pdfplumber → Gemini → PaddleOCR → Tesseract → RapidOCR
-    Order: Gemini first (best quality), then Paddle (best free Devanagari),
-    then Tesseract, then RapidOCR as last resort.
-    """
+def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
     global _RUNTIME_PDF_CACHE
     if pdf_url in _RUNTIME_PDF_CACHE:
         content = _RUNTIME_PDF_CACHE[pdf_url]
@@ -2308,14 +2318,29 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
             print(f"[WARN] PDF download failed for {pdf_url}: {exc}", file=sys.stderr)
             return None, "", False, "download_error", ""
 
+    content_hash = hashlib.sha256(content).hexdigest()
+    cached = _get_ocr_cache(content_hash)
+    if cached:
+        cached_cleaned, cached_raw, cached_method = cached
+        print(f"[OCR-CACHE] Same content, skipping OCR ({len(cached_cleaned)} chars, was={cached_method}): {pdf_url[:70]}", file=sys.stderr)
+        return (content, cached_cleaned, cached_method != "plumber", cached_method, cached_raw)
+
+    ocr_start = time.monotonic()
+
+    def _ocr_deadline_hit():
+        if deadline and time.monotonic() > deadline: return True
+        if time.monotonic() - ocr_start > MAX_PDF_OCR_SECONDS:
+            print(f"[OCR-CAP] Per-PDF OCR time cap ({MAX_PDF_OCR_SECONDS}s) hit", file=sys.stderr)
+            return True
+        return False
+
     raw_text = _extract_pdf_text_plumber(content)
     extraction_method = "plumber"
 
     if _text_looks_thin(raw_text):
         print(f"[INFO] PDF thin ({len(raw_text)} chars). Starting OCR pipeline...", file=sys.stderr)
 
-        # 1. GEMINI (Primary — best quality, free tier)
-        if GEMINI_PDF_OCR_ENABLED and not _GEMINI_QUOTA_EXHAUSTED:
+        if GEMINI_PDF_OCR_ENABLED and not _GEMINI_QUOTA_EXHAUSTED and not _ocr_deadline_hit():
             print("[OCR] Trying Gemini...", file=sys.stderr)
             gemini_text = _extract_with_gemini_pdf(content)
             if gemini_text and not _text_looks_garbage(gemini_text) and len(gemini_text.strip()) > len(raw_text.strip()):
@@ -2323,8 +2348,7 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
                 extraction_method = "gemini"
                 print(f"[INFO] Gemini OCR succeeded ({len(gemini_text)} chars)", file=sys.stderr)
 
-        # 2. PADDLEOCR (Primary free fallback — best Devanagari accuracy)
-        if extraction_method == "plumber" and PADDLEOCR_ENABLED and _PADDLEOCR_AVAILABLE:
+        if extraction_method == "plumber" and PADDLEOCR_ENABLED and _PADDLEOCR_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying PaddleOCR (Devanagari)...", file=sys.stderr)
             paddle_text = _extract_pdf_text_paddleocr(content)
             if paddle_text and not _text_looks_garbage(paddle_text) and len(paddle_text.strip()) > len(raw_text.strip()):
@@ -2332,8 +2356,7 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
                 extraction_method = "paddleocr"
                 print(f"[INFO] PaddleOCR succeeded ({len(paddle_text)} chars)", file=sys.stderr)
 
-        # 3. TESSERACT (fallback)
-        if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE:
+        if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying Tesseract...", file=sys.stderr)
             tess_text = _extract_pdf_text_tesseract(content)
             if tess_text and not _text_looks_garbage(tess_text) and len(tess_text.strip()) > len(raw_text.strip()):
@@ -2341,8 +2364,7 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
                 extraction_method = "tesseract"
                 print(f"[INFO] Tesseract succeeded ({len(tess_text)} chars)", file=sys.stderr)
 
-        # 4. RAPIDOCR (last resort)
-        if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE:
+        if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying RapidOCR...", file=sys.stderr)
             rocr_text = _extract_pdf_text_rapidocr(content)
             if rocr_text and not _text_looks_garbage(rocr_text) and len(rocr_text.strip()) > len(raw_text.strip()):
@@ -2352,6 +2374,10 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True):
 
     cleaned = clean_text(raw_text, MAX_PDF_TEXT_CHARS)
     raw_for_title = raw_text[:MAX_PDF_RAW_TEXT_CHARS]
+
+    if cleaned and len(cleaned) >= 20:
+        _put_ocr_cache(content_hash, cleaned, raw_for_title, extraction_method)
+
     return (content, cleaned, extraction_method != "plumber", extraction_method, raw_for_title)
 
 
@@ -2906,6 +2932,7 @@ def format_message(site, item, classification=None):
     elif ocr_method == "paddleocr": ocr_marker = " 🔍P"
     elif ocr_method == "rapidocr": ocr_marker = " 🔍R"
     elif ocr_method == "tesseract": ocr_marker = " 🔍T"
+    elif ocr_method == "cache": ocr_marker = " 🔍C"
     else: ocr_marker = ""
     pdf_marker = " 📄" if item.get("is_pdf") else ""
     lines = [f"🔔 <b>{site_name}</b> {site_tag}{pdf_marker}", ""]
@@ -3111,7 +3138,11 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
             return None, "", False, "time_limit", ""
         try:
             timeout = _SITE_TIMEOUT_BY_ID.get(record.get("site_id"), default_timeout)
-            return download_pdf_content(record["url"], timeout, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
+            return download_pdf_content(
+                record["url"], timeout,
+                verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True),
+                deadline=send_deadline,
+            )
         except Exception as exc:
             print(f"[WARN] PDF fetch error: {exc}", file=sys.stderr)
             return None, "", False, "error", ""
@@ -3195,10 +3226,12 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
 
 
 def main():
-    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
+    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _OCR_CONTENT_CACHE
+    global _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
     global _JS_RENDER_COUNT
     _RUNTIME_PDF_CACHE = {}
+    _OCR_CONTENT_CACHE = {}
     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
     _GEMINI_QUOTA_EXHAUSTED = False
