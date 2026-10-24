@@ -70,7 +70,7 @@
       "name": "Kolhan University, Chaibasa",
       "url": "https://www.kolhanuniversity.ac.in/",
       "enabled": true,
-      "js_render": "auto",
+      "js_render": "always",
       "js_wait_after_ms": 3000
     },
     {
@@ -78,7 +78,8 @@
       "name": "Sido Kanhu Murmu University, Dumka",
       "url": "https://skmu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "request_timeout_seconds": 60
     },
     {
       "id": "dspmu-ranchi",
@@ -110,7 +111,8 @@
       "name": "Birsa Munda Tribal University, Khunti",
       "url": "https://bmtu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "always",
+      "js_wait_after_ms": 3000
     },
     {
       "id": "jut-ranchi",
