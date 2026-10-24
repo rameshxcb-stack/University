@@ -1362,11 +1362,6 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
                 print(f"[STALE-SESSION] Old session {session_start}-{session_end}", file=sys.stderr)
                 return True
 
-    # FIX 2 (2-line): Skip year-only stale check when title has batch/session reference.
-    # "Batch 2023-24" or "Session 2020-21" identifies the program COHORT, not the
-    # publication date. Students in old batches are still active in 5-6 year programs,
-    # so notices about them are current. Full date check above (title/context/pdf) still
-    # runs and catches notices with SPECIFIC old dates.
     batch_session_signal = bool(re.search(
         r'\b(?:batch|session)\s*[:\-]?\s*\d{2,4}|\b20\d{2}\s*[-/–—]\s*(?:20)?\d{2,4}\b',
         normalized_title, re.I
@@ -1560,6 +1555,9 @@ def get_config():
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
         try: site["js_selector_timeout_ms"] = max(1000, min(90000, int(site.get("js_selector_timeout_ms", 10000))))
         except (TypeError, ValueError, OverflowError): site["js_selector_timeout_ms"] = 10000
+        # STEP 1: Per-site max_items_per_site support (VBU uses 200, others default to scan value)
+        try: site["max_items_per_site"] = max(1, min(500, int(site.get("max_items_per_site", scan["max_items_per_site"]))))
+        except (TypeError, ValueError, OverflowError): site["max_items_per_site"] = scan["max_items_per_site"]
         raw_direct = site.get("direct_urls", [])
         if not isinstance(raw_direct, list): raw_direct = []
         site["direct_urls"] = [str(u).strip() for u in raw_direct if isinstance(u, (str, bytes)) and str(u).strip()]
@@ -1702,14 +1700,9 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
-    # FIX 1 (2-line): Use empty context in staleness check. WordPress sidebar noise
-    # and truncated context (past 200 chars) can produce false "stale" results, causing
-    # legit notices (e.g., "Advertisement for Dy. Director") to be ignored.
-    # The main() loop already checks full context BEFORE pre_classify runs (step 1),
-    # so genuinely stale notices with old dates in context are still caught there.
     if _is_stale_notice(
         record.get("explicit_title") or record.get("title", ""),
-        "",  # empty context - no sidebar noise, no truncation
+        "",
         record.get("url", ""),
         upload_date=_parse_upload_date(record.get("upload_date")),
         pdf_text=record.get("pdf_text", "")
@@ -1937,8 +1930,19 @@ def extract_candidates(html_text, page_url, site, scan):
             "is_pdf": is_pdf_link, "score": score + pdf_bonus, "upload_date": upload_dt.isoformat() if upload_dt else None,
         })
 
-    out.sort(key=lambda x: (-x["score"], x["title"].lower()))
-    out = out[: scan["max_items_per_site"]]
+    # STEP 1: Date-first sort (newest first), then by score. Fixes VBU issue where old
+    # high-score items were pushing out newer notices due to score-only sort.
+    def _sort_key(item):
+        dt_str = item.get("upload_date")
+        if dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                return (1, dt.timestamp(), item.get("score", 0))
+            except Exception: pass
+        return (0, 0, item.get("score", 0))
+
+    out.sort(key=_sort_key, reverse=True)
+    out = out[: site.get("max_items_per_site", scan["max_items_per_site"])]
 
     page_explicit_title = _extract_explicit_title(soup)
     if page_explicit_title:
@@ -2165,9 +2169,18 @@ def discover_site(session, site, scan):
                     if len(queue) >= total_budget * 2: break
         except Exception as exc: errors.append(f"{page}: {clean_text(str(exc), 250)}")
 
+    # STEP 1: Final list also date-first sorted (newest first), then score. Uses per-site limit.
     values = list(candidates.values())
-    values.sort(key=lambda x: (-x["score"], x["title"].lower()))
-    return (site["id"], values[: scan["max_items_per_site"]], errors, successful_pages > 0)
+    def _final_sort_key(item):
+        dt_str = item.get("upload_date")
+        if dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                return (1, dt.timestamp(), item.get("score", 0))
+            except Exception: pass
+        return (0, 0, item.get("score", 0))
+    values.sort(key=_final_sort_key, reverse=True)
+    return (site["id"], values[: site.get("max_items_per_site", scan["max_items_per_site"])], errors, successful_pages > 0)
 
 
 def scan_site(site, scan): return discover_site(make_session(), site, scan)
