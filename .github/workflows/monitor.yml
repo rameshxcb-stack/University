@@ -2,99 +2,96 @@ name: Jharkhand University Notification Monitor
 
 on:
   schedule:
-    - cron: "0 */4 * * *"        # हर 4 घंटे (universities slow हैं)
+    - cron: '0 */6 * * *'      # Every 6 hours (adjust as needed)
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: jharkhand-university-notification-monitor
-  cancel-in-progress: false
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 90          # 60 → 90 (Playwright slow है)
+    timeout-minutes: 120        # ← SAFETY NET: kill job after 2 hours
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      # ---------- CACHE: pip (huge speedup for PaddleOCR) ----------
+      - name: Cache pip packages
+        uses: actions/cache@v4
         with:
-          fetch-depth: 0
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ---------- CACHE: Playwright browsers ----------
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      # ---------- CACHE: PaddleOCR model weights ----------
+      - name: Cache PaddleOCR models
+        uses: actions/cache@v4
+        with:
+          path: ~/.paddleocr
+          key: ${{ runner.os }}-paddleocr-models-v1
+          restore-keys: |
+            ${{ runner.os }}-paddleocr-
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install system deps (Tesseract + Poppler)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tesseract-ocr tesseract-ocr-hin poppler-utils
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          python -m playwright install chromium --with-deps
 
-      # ⬇️ NEW: Playwright Chromium (required for VBU/AISECT/Angular sites)
-      - name: Install Playwright Chromium
+      - name: Install Tesseract Hindi
         run: |
-          python -m playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-hin
 
-      # Optional: quick sanity-check that Playwright actually works
-      - name: Verify Playwright
+      - name: Verify OCR engines
         run: |
-          python - <<'PY'
-          from playwright.sync_api import sync_playwright
-          with sync_playwright() as p:
-              b = p.chromium.launch(headless=True, args=["--no-sandbox"])
-              b.close()
-          print("Playwright OK")
-          PY
+          python -c "
+          import sys
+          try:
+              from paddleocr import PaddleOCR
+              print('[OK] PaddleOCR available')
+          except ImportError as e:
+              print(f'[FAIL] PaddleOCR missing: {e}'); sys.exit(1)
+          import pytesseract
+          print('[OK] Tesseract available')
+          try:
+              from rapidocr_onnxruntime import RapidOCR
+              print('[OK] RapidOCR available')
+          except ImportError:
+              print('[WARN] RapidOCR missing (non-fatal)')
+          "
 
-      - name: Run notification monitor
+      - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          NOTIFY_LANGUAGE: "both"
-          # OCR
+          OCR_DPI: "250"
           OCR_ENABLED: "true"
-          OCR_LANG: "eng+hin"
-          OCR_DPI: "200"
-          OCR_MAX_WORKERS: "1"
-          SEND_PDF_ENABLED: "true"
-          GEMINI_MAX_OUTPUT_TOKENS: "16384"
-          GEMINI_PDF_OCR_ENABLED: "true"
-          # JavaScript rendering
-          JS_RENDER_ENABLED: "true"
-          JS_RENDER_TIMEOUT_MS: "30000"
-          JS_WAIT_AFTER_MS: "2500"
-          JS_SCROLL_TO_BOTTOM: "false"
-          JS_MAX_RENDER_PER_SITE: "40"
-        run: |
-          python monitor.py
+          PADDLEOCR_ENABLED: "true"
+          TESSERACT_ENABLED: "true"
+          MAX_RUN_SECONDS: "5400"        # 90 min
+          SEND_RESERVE_SECONDS: "900"    # reserve 15 min for sending
+        run: python monitor.py
 
-      - name: Commit state
+      - name: Upload state
         if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || \
-            git commit -m "chore: update notification state"
-
-      - name: Rebase and push state
-        if: always()
-        run: |
-          for i in 1 2 3 4 5; do
-            git fetch origin "${GITHUB_REF_NAME}" && \
-              git rebase "origin/${GITHUB_REF_NAME}" && \
-              git push origin "HEAD:${GITHUB_REF_NAME}" && break
-            echo "Push attempt $i failed, retrying in 5s..."
-            sleep 5
-          done
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-state
+          path: state.json
+          retention-days: 7
