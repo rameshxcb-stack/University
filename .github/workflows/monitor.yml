@@ -3,6 +3,11 @@ name: Jharkhand University Notification Monitor
 on:
   workflow_dispatch: # External Cron isse trigger karega
 
+# ✅ YEH BLOCK ADD KIYA GAYA HAI (Queue System ke liye)
+concurrency:
+  group: university-notification-monitor
+  cancel-in-progress: false # Agar purana run chal raha hai, toh naya run queue mein wait karega
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
