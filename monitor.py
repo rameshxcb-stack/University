@@ -75,7 +75,6 @@ MAX_PDF_ATTEMPTS = 3
 TELEGRAM_SAFE_LIMIT = 4000
 TELEGRAM_CAPTION_LIMIT = 1024
 _RUNTIME_PDF_CACHE_MAX_ITEMS = 20
-_RUNTIME_PDF_CACHE_MAX_BYTES = 80 * 1024 * 1024  # Bound memory even when PDFs are large.
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
 
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").strip().lower() == "true"
@@ -116,7 +115,6 @@ STRONG_KEYWORDS = [
 
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
 _RUNTIME_PDF_CACHE: Dict[str, bytes] = {}
-_RUNTIME_PDF_CACHE_BYTES = 0
 _RUNTIME_PDF_CACHE_LOCK = threading.Lock()
 _OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
 _OCR_CONTENT_CACHE_MAX_ITEMS = 30
@@ -136,54 +134,6 @@ _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
 _JS_RENDER_COUNT = 0
 _JS_RENDER_COUNT_LOCK = threading.Lock()
-
-
-def _cache_put(url, content):
-    """Store PDF bytes in a bounded, thread-safe, per-run FIFO cache.
-
-    Returns False for invalid/oversized values. Cache failures must never block
-    notification delivery; the caller can still use the downloaded bytes.
-    """
-    global _RUNTIME_PDF_CACHE_BYTES
-    if not isinstance(url, str) or not url.strip():
-        return False
-    if not isinstance(content, (bytes, bytearray, memoryview)) or not content:
-        return False
-
-    key = url.strip()
-    payload = bytes(content)
-    payload_size = len(payload)
-    max_bytes = max(1, int(_RUNTIME_PDF_CACHE_MAX_BYTES))
-    max_items = max(1, int(_RUNTIME_PDF_CACHE_MAX_ITEMS))
-    # Do not let one unusually large PDF consume the entire runtime cache.
-    if payload_size > max_bytes:
-        return False
-
-    with _RUNTIME_PDF_CACHE_LOCK:
-        previous = _RUNTIME_PDF_CACHE.pop(key, None)
-        if previous is not None:
-            _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(previous))
-
-        while _RUNTIME_PDF_CACHE and (
-            len(_RUNTIME_PDF_CACHE) >= max_items
-            or _RUNTIME_PDF_CACHE_BYTES + payload_size > max_bytes
-        ):
-            oldest_key = next(iter(_RUNTIME_PDF_CACHE))
-            oldest = _RUNTIME_PDF_CACHE.pop(oldest_key, None)
-            if oldest is not None:
-                _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(oldest))
-
-        _RUNTIME_PDF_CACHE[key] = payload
-        _RUNTIME_PDF_CACHE_BYTES += payload_size
-    return True
-
-
-def _cache_get(url):
-    """Read cached PDF bytes under the same lock used for eviction."""
-    if not isinstance(url, str) or not url.strip():
-        return None
-    with _RUNTIME_PDF_CACHE_LOCK:
-        return _RUNTIME_PDF_CACHE.get(url.strip())
 
 _NAV_SIGNALS: Tuple[str, ...] = (
     "home", "homepage", "about us", "about", "contact us", "contact", "feedback", "site map", "sitemap", "skip to content", "accessibility", "screen reader", "whats new", "what's new", "whatsnew", "latest news", "latest update", "latest updates", "photo gallery", "video gallery", "gallery", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "social media", "follow us", "share", "login", "sign in", "sign up", "register", "logout", "main menu", "menu", "navigation",
@@ -626,7 +576,8 @@ def _pdf_content_fingerprint(content):
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
 
-def _html_content_hash(title, context):
+def _legacy_html_content_hash(title, context):
+    """Read-only compatibility hash for HTML notices saved by state schema v33."""
     if not title: return ""
     try:
         norm_title = re.sub(r"\s+", " ", (title or "").strip().casefold())[:200]
@@ -634,6 +585,24 @@ def _html_content_hash(title, context):
         combined = f"{norm_title}|{norm_context}"
         if len(combined) < 30: return ""
         return "html-v1:" + hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _html_content_hash(title, context="", url=""):
+    """Stable HTML-notice identity: normalized title + canonical URL, never volatile page context."""
+    if not title: return ""
+    try:
+        norm_title = re.sub(r"\s+", " ", (title or "").strip().casefold())[:200]
+        # Strip tracking parameters and normalize URL variants so ?utm_source=... does not
+        # create a new notification identity. Keep meaningful query parameters and SPA routes.
+        norm_url = canonical_identity_url(str(url or "").strip()) if url else ""
+        combined = f"{norm_title}|{norm_url}"
+        # URL-less legacy records fall back to the old content hash to avoid a weak title-only key.
+        if not norm_url:
+            return _legacy_html_content_hash(title, context)
+        if len(norm_title) < 8 or len(norm_url) < 12: return ""
+        return "html-v2:" + hashlib.sha256(combined.encode("utf-8")).hexdigest()
     except Exception:
         return ""
 
@@ -709,6 +678,8 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     old_title_norm = re.sub(r"\s+", " ", (old_title or "").casefold()).strip()
     new_title_norm = re.sub(r"\s+", " ", (new_title or "").casefold()).strip()
     if old_title_norm and old_title_norm == new_title_norm:
+        # Same title: ignore arbitrary context churn (sidebar, ticker, visitor count,
+        # page timestamps). Reprocess only when a known meaningful notice field changes.
         old_fields = extract_meaningful_fields("\n".join([old_title or "", old_context or ""]))
         new_fields = extract_meaningful_fields("\n".join([new_title or "", new_context or ""]))
         return any(old_fields.get(k) != new_fields.get(k) for k in set(old_fields) | set(new_fields))
@@ -1784,9 +1755,9 @@ def _remember_sent_fingerprint(state, record, iid=None):
         existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
         index[key] = {"t": title, "s": site_id, "d": str(existing_date or stamp)[:40], "i": item_id}
 
-    # HTML notices do not always have downloadable PDFs. Keep an independent exact
-    # title+context fingerprint so pruning old full records does not re-send them.
-    html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
+    # HTML notices do not always have downloadable PDFs. Keep an independent stable
+    # title+canonical-URL fingerprint so pruning old full records does not re-send them.
+    html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""), record.get("url", ""))
     if html_hash:
         html_index = state.setdefault("html_fingerprints", {})
         existing = html_index.get(html_hash) if isinstance(html_index.get(html_hash), dict) else {}
@@ -1803,25 +1774,32 @@ def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     if not new_hash or not new_kind:
-        new_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
-        new_kind = "html-v1"
+        new_hash = _html_content_hash(record.get("title", ""), record.get("context", ""), record.get("url", ""))
+        new_kind = "html-v2" if new_hash.startswith("html-v2:") else "html-v1"
     if not new_hash:
         return None
     new_title_norm = _normalize_title(record.get("title", ""))
 
     # PDF fingerprints are global across universities and survive item pruning.
-    if new_kind != "html-v1":
+    if not str(new_kind).startswith("html-"):
         indexed = state.get("sent_fingerprints", {}).get(f"{new_kind}:{new_hash}")
         if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
             return indexed.get("t") or "previously sent identical PDF"
     else:
-        # HTML hash includes normalized title and context. Require a plausible title
-        # match as a guard against corrupt/legacy index entries.
+        # Current HTML identity uses title + canonical URL, ignoring volatile context.
         indexed = state.get("html_fingerprints", {}).get(new_hash)
         if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
             indexed_title = _normalize_title(indexed.get("t", ""))
             if new_title_norm and indexed_title and fuzz.token_sort_ratio(new_title_norm, indexed_title) >= 85:
                 return indexed.get("t") or "previously sent identical HTML notice"
+        # Compatibility: old state files used title + context (html-v1). Preserve those
+        # entries so the first deployment of this fix does not forget previously sent items.
+        legacy_hash = _legacy_html_content_hash(record.get("title", ""), record.get("context", ""))
+        legacy = state.get("html_fingerprints", {}).get(legacy_hash) if legacy_hash else None
+        if isinstance(legacy, dict) and str(legacy.get("i", "")) != str(exclude_iid or ""):
+            legacy_title = _normalize_title(legacy.get("t", ""))
+            if new_title_norm and legacy_title and fuzz.token_sort_ratio(new_title_norm, legacy_title) >= 85:
+                return legacy.get("t") or "previously sent legacy HTML notice"
 
     # Compatibility fallback for older state.json records and fuzzy legacy matches.
     for other_iid, other in state.get("items", {}).items():
@@ -1829,15 +1807,15 @@ def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
             continue
         if other.get("status") != "sent":
             continue
-        if new_kind == "html-v1":
-            other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
+        if str(new_kind).startswith("html-"):
+            other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""), other.get("url", ""))
         else:
             if other.get("pdf_hash_kind") != new_kind:
                 continue
             other_hash = other.get("pdf_hash")
         if not other_hash or other_hash != new_hash:
             continue
-        if new_kind == "html-v1":
+        if str(new_kind).startswith("html-"):
             other_title_norm = _normalize_title(other.get("title", ""))
             if not new_title_norm or not other_title_norm or fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 85:
                 continue
@@ -2492,8 +2470,10 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
 
 
 def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
-    content = _cache_get(pdf_url)
-    if content is None:
+    global _RUNTIME_PDF_CACHE
+    if pdf_url in _RUNTIME_PDF_CACHE:
+        content = _RUNTIME_PDF_CACHE[pdf_url]
+    else:
         try:
             session = make_session()
             content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, timeout, verify_ssl=verify_ssl)
@@ -2899,7 +2879,7 @@ def _build_pdf_caption(full_message, classification):
 def send_notification_with_pdf(token, chat_id, record, full_message):
     pdf_url = record.get("url", "")
     filename = _safe_filename(pdf_url)
-    pdf_bytes = _cache_get(pdf_url)
+    pdf_bytes = _RUNTIME_PDF_CACHE.get(pdf_url)
     if pdf_bytes is None:
         try:
             session = make_session()
@@ -3496,13 +3476,43 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
     return list(by_id.items())
 
 
+def run_self_tests():
+    """Offline regression checks; never scans websites or sends Telegram messages."""
+    checks = 0
+    def check(condition, message):
+        nonlocal checks
+        if not condition:
+            raise AssertionError(message)
+        checks += 1
+
+    first_hash = _html_content_hash("Exam Form Notice", "visitor count 100", "https://example.edu/notice?id=4&utm_source=first")
+    second_hash = _html_content_hash(" Exam   Form Notice ", "visitor count 900", "https://example.edu/notice?utm_medium=second&id=4")
+    check(bool(first_hash) and first_hash == second_hash, "HTML identity changed due to context/tracking parameters")
+    check(not _meaningful_metadata_change("Exam Form Notice", "Exam Form Notice", "visitor count 100; sidebar updated", "visitor count 900; sidebar refreshed"), "Dynamic context triggered reprocessing")
+    check(_meaningful_metadata_change("Exam Form Notice", "Exam Form Notice", "Last date: 10 October 2026", "Last date: 20 October 2026"), "Meaningful deadline change was not detected")
+
+    state = default_state()
+    sent_record = {"title":"Exam Form Notice", "context":"visitor count 100", "url":"https://example.edu/notice?id=4&utm_source=first", "site_id":"test-site", "sent_at":utc_now(), "_item_id":"sent-old"}
+    _remember_sent_fingerprint(state, sent_record, "sent-old")
+    new_record = {"title":"Exam Form Notice", "context":"visitor count 900", "url":"https://example.edu/notice?utm_medium=second&id=4"}
+    check(_is_duplicate_by_pdf_hash(state, new_record, exclude_iid="new-id") == "Exam Form Notice", "Previously sent HTML notice was not deduplicated")
+
+    legacy_state = default_state()
+    legacy_hash = _legacy_html_content_hash("Old Notice", "old static context that is long enough")
+    legacy_state["html_fingerprints"][legacy_hash] = {"t":"Old Notice", "s":"test-site", "d":utc_now(), "i":"old-id"}
+    legacy_record = {"title":"Old Notice", "context":"old static context that is long enough", "url":"https://example.edu/old-notice"}
+    check(_is_duplicate_by_pdf_hash(legacy_state, legacy_record, exclude_iid="new-id") == "Old Notice", "Legacy html-v1 fingerprint was not recognized")
+
+    print(f"[SELF-TEST] PASS: {checks} offline regression checks; no websites or Telegram messages used.")
+    return 0
+
+
 def main():
-    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _RUNTIME_PDF_CACHE_BYTES, _OCR_CONTENT_CACHE
+    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _OCR_CONTENT_CACHE
     global _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
     global _JS_RENDER_COUNT
     _RUNTIME_PDF_CACHE = {}
-    _RUNTIME_PDF_CACHE_BYTES = 0
     _OCR_CONTENT_CACHE = {}
     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
@@ -3920,9 +3930,7 @@ def main():
             else: print(f"[WARN] Health alert not delivered: {detail}", file=sys.stderr)
         if sent_count > 0: state["last_successful_notify_at"] = utc_now()
     except Exception as exc: print(f"[WARN] Health alert check failed: {exc}", file=sys.stderr)
-    with _RUNTIME_PDF_CACHE_LOCK:
-        _RUNTIME_PDF_CACHE.clear()
-        _RUNTIME_PDF_CACHE_BYTES = 0
+    _RUNTIME_PDF_CACHE.clear()
     try:
         state["stats"]["errors"] = int(state["stats"].get("errors", 0)) + run_errors
         prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"], max_sent_fingerprints=scan["max_sent_fingerprints"], max_html_fingerprints=scan["max_html_fingerprints"])
@@ -3957,4 +3965,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--test" in sys.argv:
+        raise SystemExit(run_self_tests())
     raise SystemExit(main())
