@@ -37,22 +37,18 @@ def _try_import(*names):
 
 
 fitz = _try_import("pymupdf", "fitz")
-
 _rapidocr_mod = _try_import("rapidocr_onnxruntime", "rapidocr")
 RapidOCR = getattr(_rapidocr_mod, "RapidOCR", None) if _rapidocr_mod is not None else None
 _RAPIDOCR_AVAILABLE = RapidOCR is not None
-
 try:
     from paddleocr import PaddleOCR
     _PADDLEOCR_AVAILABLE = True
 except ImportError:
     PaddleOCR = None
     _PADDLEOCR_AVAILABLE = False
-
 pytesseract = _try_import("pytesseract")
 _PIL_Image = _try_import("PIL.Image")
 _TESSERACT_AVAILABLE = pytesseract is not None and _PIL_Image is not None
-
 try:
     from playwright.sync_api import sync_playwright, Error as PlaywrightError
     _PLAYWRIGHT_AVAILABLE = True
@@ -72,7 +68,6 @@ TELEGRAM_MAX_ATTEMPTS = 100
 TELEGRAM_RETRY_WINDOW_HOURS = 168
 TELEGRAM_RETRY_BASE_MINUTES = 20
 TELEGRAM_RETRY_MAX_MINUTES = 360
-
 MAX_PDF_SEND_BYTES = 45 * 1024 * 1024
 MAX_GEMINI_PDF_BYTES = 18 * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "8"))
@@ -81,7 +76,6 @@ MAX_PDF_RAW_TEXT_CHARS = 8000
 MAX_PDF_ATTEMPTS = 3
 TELEGRAM_SAFE_LIMIT = 4000
 TELEGRAM_CAPTION_LIMIT = 1024
-
 _RUNTIME_PDF_CACHE_MAX_ITEMS = 20
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
 
@@ -91,13 +85,10 @@ OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "200"))
 OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "2"))
 _OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "4"))
 MAX_PDF_OCR_SECONDS = int(os.getenv("MAX_PDF_OCR_SECONDS", "120"))
-
 TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").strip().lower() == "true"
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "hin+eng").strip() or "hin+eng"
 TESSERACT_PSM = os.getenv("TESSERACT_PSM", "6").strip()
-
 PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "true").strip().lower() == "true"
-
 GEMINI_PDF_OCR_ENABLED = os.getenv("GEMINI_PDF_OCR_ENABLED", "true").strip().lower() == "true"
 SEND_PDF_ENABLED = os.getenv("SEND_PDF_ENABLED", "true").strip().lower() == "true"
 
@@ -113,39 +104,15 @@ JS_WAIT_FOR_SELECTOR_DEFAULT = os.getenv("JS_WAIT_FOR_SELECTOR_DEFAULT", "").str
 NOTIFY_LANGUAGE = os.getenv("NOTIFY_LANGUAGE", "both").strip().lower()
 if NOTIFY_LANGUAGE not in {"both", "hi", "en"}:
     NOTIFY_LANGUAGE = "both"
-
 STALE_NOTICE_DAYS = int(os.getenv("STALE_NOTICE_DAYS", "15"))
 OLD_YEAR_HINT_YEARS_BACK = int(os.getenv("OLD_YEAR_HINT_YEARS_BACK", "2"))
 ETAG_CHECK_MAX_AGE_DAYS = int(os.getenv("ETAG_CHECK_MAX_AGE_DAYS", "14"))
-
-USER_AGENT = os.getenv(
-    "MONITOR_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
-
-JS_RENDER_USER_AGENT = os.getenv(
-    "JS_RENDER_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
+USER_AGENT = os.getenv("MONITOR_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+JS_RENDER_USER_AGENT = os.getenv("JS_RENDER_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
 STRONG_KEYWORDS = [
-    "admission", "result", "admit card", "answer key", "examination",
-    "exam", "semester", "revaluation", "migration", "certificate",
-    "scholarship", "fee", "syllabus", "timetable", "counselling",
-    "recruitment", "vacancy", "tender", "notice", "notification",
-    "placement", "hostel", "convocation", "registration", "enrollment",
-    "merit", "marksheet", "transcript", "bonafide", "grading", "cgpa", "gpa",
-    "phd", "ph.d", "research", "internship", "challan", "demand draft",
-    "eligibility", "qualification", "provisional", "backlog", "reappear",
-    "supplementary", "marks", "score",
-    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
-    "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र",
-    "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग",
-    "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास",
-    "दीक्षांत समारोह", "पंजीकरण", "नामांकन",
-    "मेरिट", "अंकतालिका", "अनुसंधान"
+    "admission", "result", "admit card", "answer key", "examination", "exam", "semester", "revaluation", "migration", "certificate", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "hostel", "convocation", "registration", "enrollment", "merit", "marksheet", "transcript", "bonafide", "grading", "cgpa", "gpa", "phd", "ph.d", "research", "internship", "challan", "demand draft", "eligibility", "qualification", "provisional", "backlog", "reappear", "supplementary", "marks", "score",
+    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "सेमेस्टर", "पुनर्मूल्यांकन", "माइग्रेशन", "प्रमाण पत्र", "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "काउंसलिंग", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "प्लेसमेंट", "छात्रावास", "दीक्षांत समारोह", "पंजीकरण", "नामांकन", "मेरिट", "अंकतालिका", "अनुसंधान"
 ]
 
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -154,125 +121,44 @@ _RUNTIME_PDF_CACHE_LOCK = threading.Lock()
 _OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
 _OCR_CONTENT_CACHE_MAX_ITEMS = 30
 _OCR_CONTENT_LOCK = threading.Lock()
-
 _GEMINI_API_KEY = ""
 _GEMINI_KEYS_POOL: List[str] = []
 _GEMINI_KEY_INDEX: int = 0
 _GEMINI_DEAD_KEYS: set = set()
 _GEMINI_KEY_LOCK = threading.Lock()
-
 _MODELS_DISCOVERED: bool = False
 _DYNAMIC_MODELS: List[str] = []
 _DEAD_MODELS: set = set()
 _GEMINI_QUOTA_EXHAUSTED: bool = False
-
 _RAPIDOCR_INSTANCE = None
 _PADDLEOCR_INSTANCE = None
 _OCR_INIT_LOCK = threading.Lock()
-
 _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
 _JS_RENDER_COUNT = 0
 _JS_RENDER_COUNT_LOCK = threading.Lock()
 
 _NAV_SIGNALS: Tuple[str, ...] = (
-    "home", "homepage", "about us", "about", "contact us", "contact",
-    "feedback", "site map", "sitemap", "skip to content",
-    "accessibility", "screen reader",
-    "whats new", "what's new", "whatsnew", "latest news", "latest update",
-    "latest updates", "photo gallery", "video gallery", "gallery",
-    "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin",
-    "social media", "follow us", "share",
-    "login", "sign in", "sign up", "register", "logout",
-    "main menu", "menu", "navigation",
-    "मुख्य पृष्ठ", "होम", "हमारे बारे में", "संपर्क करें", "संपर्क",
-    "फीडबैक", "साइट मैप", "स्क्रीन रीडर", "महत्वपूर्ण लिंक", "त्वरित लिंक",
-    "नई खबरें", "ताज़ा खबर", "अंतिम अपडेट", "गैलरी", "फोटो गैलरी",
+    "home", "homepage", "about us", "about", "contact us", "contact", "feedback", "site map", "sitemap", "skip to content", "accessibility", "screen reader", "whats new", "what's new", "whatsnew", "latest news", "latest update", "latest updates", "photo gallery", "video gallery", "gallery", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "social media", "follow us", "share", "login", "sign in", "sign up", "register", "logout", "main menu", "menu", "navigation",
+    "मुख्य पृष्ठ", "होम", "हमारे बारे में", "संपर्क करें", "संपर्क", "फीडबैक", "साइट मैप", "स्क्रीन रीडर", "महत्वपूर्ण लिंक", "त्वरित लिंक", "नई खबरें", "ताज़ा खबर", "अंतिम अपडेट", "गैलरी", "फोटो गैलरी",
 )
-
 _NOTICE_SIGNALS: Tuple[str, ...] = (
-    "admission", "result", "admit card", "answer key", "examination",
-    "exam", "revaluation", "migration", "scholarship", "fee", "syllabus",
-    "timetable", "counselling", "recruitment", "vacancy", "tender",
-    "notice", "notification", "placement", "convocation", "registration",
-    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा",
-    "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना",
+    "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration",
+    "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना",
 )
-
-_EXPLICIT_DUMP_SIGNALS: Tuple[str, ...] = (
-    "skip to content", "site map", "sitemap",
-    "मुख्य पृष्ठ", "महत्वपूर्ण लिंक", "त्वरित लिंक",
-)
-
-_STRICT_EARLY_NAV_SIGNALS: Tuple[str, ...] = (
-    "home", "homepage", "whats new", "what's new", "whatsnew",
-    "facebook", "twitter", "instagram", "youtube", "whatsapp",
-    "linkedin", "skip to content", "sitemap", "site map",
-    "मुख्य पृष्ठ", "होम", "साइट मैप",
-)
-
+_EXPLICIT_DUMP_SIGNALS: Tuple[str, ...] = ("skip to content", "site map", "sitemap", "मुख्य पृष्ठ", "महत्वपूर्ण लिंक", "त्वरित लिंक")
+_STRICT_EARLY_NAV_SIGNALS: Tuple[str, ...] = ("home", "homepage", "whats new", "what's new", "whatsnew", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "skip to content", "sitemap", "site map", "मुख्य पृष्ठ", "होम", "साइट मैप")
 _DEVANAGARI_DELIMS = r"[\s\|•\-–—,:;()\[\]{}/\\?!\"'`]"
 _LATIN_LEFT_BOUNDARY = r"(?<![A-Za-z0-9_])"
 _LATIN_RIGHT_BOUNDARY = r"(?![A-Za-z0-9_])"
-
 _TITLE_STRIP_SIGNALS: Tuple[str, ...] = tuple(sorted(_STRICT_EARLY_NAV_SIGNALS, key=len, reverse=True))
 
-_JS_REQUIRED_MARKERS = (
-    '<div id="root"', '<div id="app"', '<div id="__next"', '<div id="__nuxt"',
-    'ng-app', 'ng-version', 'data-reactroot', 'data-v-app',
-    'please enable javascript', 'javascript is disabled',
-    'you need to enable javascript', 'enable javascript and cookies',
-    'enable javascript to run', 'loading...', 'loading…',
-    'जावास्क्रिप्ट सक्षम', 'ng-cloak', 'ng-controller', 'ng-repeat', 'ng-bind', 'ng-view',
-    'ng-include', 'ng-scope', 'ng-binding', 'angular.js', 'angular.min.js',
-    'angular-route', 'react.production', 'react-dom.production',
-    'vue.min.js', 'vue.runtime', 'data-v-', '__next_data__', '_next/static',
-    '__nuxt__', '_nuxt/',
-)
-
-_JS_PDF_VIEWER_MARKERS = (
-    "pdfjs", "pdf.js", "pdfobject", "viewer.html",
-    "docs.google.com/viewer", "drive.google.com/file",
-    "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html",
-)
+_JS_REQUIRED_MARKERS = ('<div id="root"', '<div id="app"', '<div id="__next"', '<div id="__nuxt"', 'ng-app', 'ng-version', 'data-reactroot', 'data-v-app', 'please enable javascript', 'javascript is disabled', 'you need to enable javascript', 'enable javascript and cookies', 'enable javascript to run', 'loading...', 'loading…', 'जावास्क्रिप्ट सक्षम', 'ng-cloak', 'ng-controller', 'ng-repeat', 'ng-bind', 'ng-view', 'ng-include', 'ng-scope', 'ng-binding', 'angular.js', 'angular.min.js', 'angular-route', 'react.production', 'react-dom.production', 'vue.min.js', 'vue.runtime', 'data-v-', '__next_data__', '_next/static', '__nuxt__', '_nuxt/')
+_JS_PDF_VIEWER_MARKERS = ("pdfjs", "pdf.js", "pdfobject", "viewer.html", "docs.google.com/viewer", "drive.google.com/file", "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html")
 
 _NOTICE_KEYWORDS = [
-    "notice", "notification", "announcement", "circular", "advertisement", "publicity",
-    "exam", "examination", "result", "admit", "form",
-    "tender", "quotation", "bid", "rfp", "eoi", "nit",
-    "recruitment", "vacancy", "appointment", "interview", "apprentice",
-    "syllabus", "curriculum",
-    "date sheet", "date extended", "last date", "due date", "exam date",
-    "schedule", "timetable", "time-table", "time table",
-    "calendar",
-    "fee", "payment", "challan",
-    "merit", "marksheet", "score", "grade", "cgpa", "gpa",
-    "scholarship",
-    "counselling", "counseling",
-    "migration", "certificate", "transcript", "bonafide", "provisional",
-    "registration", "enrollment", "enrolment",
-    "convocation", "placement", "hostel",
-    "prospectus",
-    "semester", "revaluation", "rechecking",
-    "internship",
-    "eligibility", "qualification",
-    "सूचना", "अधिसूचना", "विज्ञापन", "नोटिस",
-    "परीक्षा", "परीक्षा कार्यक्रम", "परीक्षा केंद्र",
-    "परिणाम", "रिजल्ट",
-    "प्रवेश", "प्रवेश पत्र",
-    "भर्ती", "नियुक्ति", "साक्षात्कार", "रिक्त पद",
-    "निविदा", "कोटेशन",
-    "छात्रवृत्ति", "शुल्क",
-    "पाठ्यक्रम", "समय सारिणी", "समय", "कैलेंडर",
-    "मेरिट", "अंकतालिका",
-    "काउंसलिंग",
-    "माइग्रेशन", "प्रमाण पत्र",
-    "पंजीकरण", "नामांकन",
-    "दीक्षांत",
-    "पुनर्मूल्यांकन",
-    "सेमेस्टर",
-    "प्लेसमेंट",
-    "छात्रावास",
+    "notice", "notification", "announcement", "circular", "advertisement", "publicity", "exam", "examination", "result", "admit", "form", "tender", "quotation", "bid", "rfp", "eoi", "nit", "recruitment", "vacancy", "appointment", "interview", "apprentice", "syllabus", "curriculum", "date sheet", "date extended", "last date", "due date", "exam date", "schedule", "timetable", "time-table", "time table", "calendar", "fee", "payment", "challan", "merit", "marksheet", "score", "grade", "cgpa", "gpa", "scholarship", "counselling", "counseling", "migration", "certificate", "transcript", "bonafide", "provisional", "registration", "enrollment", "enrolment", "convocation", "placement", "hostel", "prospectus", "semester", "revaluation", "rechecking", "internship", "eligibility", "qualification",
+    "सूचना", "अधिसूचना", "विज्ञापन", "नोटिस", "परीक्षा", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परिणाम", "रिजल्ट", "प्रवेश", "प्रवेश पत्र", "भर्ती", "नियुक्ति", "साक्षात्कार", "रिक्त पद", "निविदा", "कोटेशन", "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "समय", "कैलेंडर", "मेरिट", "अंकतालिका", "काउंसलिंग", "माइग्रेशन", "प्रमाण पत्र", "पंजीकरण", "नामांकन", "दीक्षांत", "पुनर्मूल्यांकन", "सेमेस्टर", "प्लेसमेंट", "छात्रावास",
 ]
 
 
@@ -323,7 +209,6 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
     selector = str(wait_for_selector or JS_WAIT_FOR_SELECTOR_DEFAULT or "").strip()
     try: selector_timeout_ms = max(1000, min(90000, int(selector_timeout_ms or 10000)))
     except (TypeError, ValueError, OverflowError): selector_timeout_ms = 10000
-
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
@@ -961,7 +846,6 @@ _LANGUAGE_SELECTOR_TITLES = {
     "कश्मीरी", "कोकणी", "मणिपुरी", "नेपाली", "संस्कृत", "सिंधी", "बोडो", "डोगरी", "मैथिली", "राजस्थानी",
 }
 _EMPTY_PAGE_PHRASES = ["sorry, no notice matched", "no notice matched this category", "no records found", "no data found", "no notices found", "no results found"]
-
 _TITLE_LABEL_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]\s*$", re.IGNORECASE)
 _TITLE_INLINE_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]\s*(.+?)\s*$", re.IGNORECASE)
 _TITLE_LABEL_STRICT_RE = re.compile(r"^\s*(?:document\s+title|title|subject|शीर्षक|विषय|दस्तावेज़\s*शीर्षक)\s*[:：–—-]?\s*$", re.IGNORECASE)
@@ -1294,7 +1178,7 @@ def _extract_upload_date(anchor_tag):
     return None
 
 
-def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
+def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, strict_pdf_date=False):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=STALE_NOTICE_DAYS)
 
@@ -1307,6 +1191,44 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None):
     normalized_context = context_text.translate(_DEVA_DIGIT_TRANS)
     normalized_full = full_text.translate(_DEVA_DIGIT_TRANS)
     normalized_pdf_head = pdf_text_str[:500].translate(_DEVA_DIGIT_TRANS)
+    normalized_pdf_full = pdf_text_str.translate(_DEVA_DIGIT_TRANS)
+
+    # STRICT PDF DATE: After PDF download, PDF content overrides HTML upload date.
+    # Applies to all universities. Fixes CUJ case where HTML says "uploaded today"
+    # but PDF content is from old batch/session (e.g., 2022-23).
+    if strict_pdf_date and normalized_pdf_full.strip():
+        pdf_dates = _extract_full_dates(normalized_pdf_full)
+        pdf_session_pattern = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[-/–—]\s*((?:19|20)\d{2}|\d{2})(?!\d)")
+        pdf_session_ends = []
+        for m in pdf_session_pattern.finditer(normalized_pdf_full):
+            start_yr = int(m.group(1))
+            end_token = m.group(2)
+            end_yr = int(end_token) if len(end_token) == 4 else (start_yr // 100) * 100 + int(end_token)
+            if end_yr < start_yr: end_yr += 100
+            pdf_session_ends.append(end_yr)
+
+        newest_pdf_date = max(pdf_dates) if pdf_dates else None
+        newest_pdf_session_end = max(pdf_session_ends) if pdf_session_ends else None
+
+        if newest_pdf_date or newest_pdf_session_end:
+            session_end_dt = None
+            if newest_pdf_session_end:
+                try:
+                    session_end_dt = datetime(newest_pdf_session_end, 12, 31, tzinfo=timezone.utc)
+                except (ValueError, OverflowError):
+                    session_end_dt = None
+
+            is_recent = False
+            if newest_pdf_date and newest_pdf_date >= cutoff:
+                is_recent = True
+            if session_end_dt and session_end_dt >= cutoff:
+                is_recent = True
+
+            if not is_recent:
+                date_str = str(newest_pdf_date.date()) if newest_pdf_date else "N/A"
+                print(f"[STALE-PDF-STRICT] PDF content old (date={date_str}, session_end={newest_pdf_session_end})", file=sys.stderr)
+                return True
+            return False
 
     title_words = normalized_title.split()
     if len(title_words) >= 5:
@@ -1459,11 +1381,7 @@ def _normalize_host(host):
 
 
 def same_host(a, b): return _normalize_host(urlparse(a).netloc) == _normalize_host(urlparse(b).netloc)
-
-
 def is_http_url(url): return urlparse(url).scheme in {"http", "https"}
-
-
 def is_pdf(url): return urlparse(url).path.lower().endswith(".pdf")
 
 
@@ -1569,11 +1487,7 @@ def get_config():
 
 
 def default_state():
-    return {
-        "version": 31, "initialized": False, "last_run": None, "items": {}, "sites": {}, "review_queue": {},
-        "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0},
-        "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0},
-    }
+    return {"version": 31, "initialized": False, "last_run": None, "items": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
 
 
 def load_state():
@@ -1678,9 +1592,8 @@ def pending_priority(record, keywords, now=None):
     return urgency + score + age_bonus, age_days
 
 
-# CHANGE A: Added 5 keywords to fix short titles being PRE-IGNORED
 _PRECLASS_STRONG = (
-    "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "result", "notice", "notification", "examination", "exam form", "exam schedule", "exam programme", "marksheet", "merit", "advertisement", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परीक्षा फॉर्म",
+    "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "exam form", "exam schedule", "exam programme", "marksheet", "merit", "advertisement", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परीक्षा फॉर्म",
     "dy. director", "deputy director", "principal", "associate dean", "backlog",
     "on contractual basis", "on contract basis", "for the post of",
     "अनुबंध के आधार पर", "पद के लिए",
@@ -1701,6 +1614,22 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
+    # VBU DEBUG (diagnostic only — safe to remove after Run #41)
+    if record.get("site_id") == "vbu-hazaribagh":
+        print(f"[VBU-DEBUG] title={record.get('title','')[:90]!r} | is_pdf={record.get('is_pdf')} | status={record.get('status')} | url={record.get('url','')[:100]}", file=sys.stderr)
+
+    # PDFs skip title heuristics — Gemini reads PDF content to classify
+    if record.get("is_pdf", False):
+        if _is_stale_notice(
+            record.get("explicit_title") or record.get("title", ""),
+            "",
+            record.get("url", ""),
+            upload_date=_parse_upload_date(record.get("upload_date")),
+            pdf_text=record.get("pdf_text", "")
+        ):
+            return False
+        return None
+
     if _is_stale_notice(
         record.get("explicit_title") or record.get("title", ""),
         "",
@@ -1727,7 +1656,6 @@ def _keyword_pre_classify(record, excluded_signals=None):
                 r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
                 r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
                 r'\b(?:advertisement|advt\.?)\s+for\s+the\s+post\b',
-                # CHANGE B: Allow these legit terms to bypass the 8+ word filter
                 r'\b(?:semester\s+calendar|academic\s+calendar|award\s+of\s+degree|list\s+of\s+documents|not\s+qualified)\b',
             ]
             if not any(re.search(p, title) for p in strong_notice_patterns):
@@ -1812,28 +1740,23 @@ def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     new_site = record.get("site_id")
-
     if not new_hash or not new_kind:
         html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
         if not html_hash: return None
         new_hash = html_hash
         new_kind = "html-v1"
-
     if not new_site: return None
     new_title_norm = _normalize_title(record.get("title", ""))
     for other_iid, other in state.get("items", {}).items():
         if other_iid == exclude_iid or not isinstance(other, dict): continue
         if other.get("status") != "sent": continue
         if other.get("site_id") != new_site: continue
-
         if new_kind == "html-v1":
             other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
         else:
             other_hash = other.get("pdf_hash")
             if other.get("pdf_hash_kind") != new_kind: continue
-
         if not other_hash or other_hash != new_hash: continue
-
         other_title_norm = _normalize_title(other.get("title", ""))
         if new_title_norm and other_title_norm:
             if fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 70: continue
@@ -1873,7 +1796,6 @@ def extract_candidates(html_text, page_url, site, scan):
                 if len(part) >= 8 and not _is_generic_title(part) and not _is_language_selector(part):
                     context_title = part
                     break
-
             if not context_title or _is_generic_title(context_title):
                 walker = parent
                 for _ in range(3):
@@ -1889,9 +1811,20 @@ def extract_candidates(html_text, page_url, site, scan):
                                 context_title = htext
                                 break
                     if context_title: break
-
             title = context_title or _title_from_url(href, min_len=5) or ""
-            if not title or _is_generic_title(title): continue
+            if not title or _is_generic_title(title):
+                is_pdf_href = bool(is_pdf(href) or _looks_like_pdf_url(href))
+                if is_pdf_href:
+                    filename_title = _filename_to_title(href)
+                    if filename_title:
+                        title = filename_title
+                    else:
+                        path_slug = unquote(urlparse(href).path or "").rstrip("/").rsplit("/", 1)[-1]
+                        if path_slug and len(path_slug) >= 3:
+                            title = clean_text(f"PDF: {path_slug}", 300)
+                        else:
+                            title = f"PDF Document ({hashlib.sha256(href.encode()).hexdigest()[:8]})"
+                if not title or _is_generic_title(title): continue
 
         if _is_language_selector(title):
             parent_text = clean_text(parent.get_text(" ", strip=True) if parent else "", 300)
@@ -1914,7 +1847,9 @@ def extract_candidates(html_text, page_url, site, scan):
         score = local_score(title, href, context, keywords)
         href_lower = href.lower()
         is_pdf_link = bool(is_pdf(href) or _looks_like_pdf_url(href))
-        if is_pdf_link: pdf_bonus = 2
+        if is_pdf_link:
+            pdf_bonus = 2
+            score = 10
         elif any(kw in href_lower for kw in ("/notice/", "/notices/", "/document", "/writereaddata/", "/uploadfile/", "/uploads/", "/upload/", "/downloadfile/", "/download_file/", "/getfile/", "/showfile/", "/viewfile/", "/filedownload/", "/files/", "/media/", "/file/", "/attachment/", "/attachments/", "/docs/", "/download/", "/downloads/")): pdf_bonus = 1
         else: pdf_bonus = 0
 
@@ -2053,7 +1988,6 @@ def discover_site(session, site, scan):
     max_pages = scan["max_discovery_pages_per_site"]
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
     max_pagination_per_archive = scan.get("max_pagination_per_archive", 3)
-
     discovery_keywords = list(dict.fromkeys(scan["discovery_keywords"] + site.get("discovery_keywords", []) + scan["keywords"]))
 
     direct_urls = []
@@ -2089,7 +2023,6 @@ def discover_site(session, site, scan):
         if is_archive and archive_visited_count >= max_archive_pages: continue
         if not is_archive and normal_visited_count >= max_pages + len(direct_urls): continue
         visited.add(page)
-
         if is_archive:
             is_pagination = bool(re.search(r"/page/\d+|[?&](?:page|paged)=\d+", page, re.I))
             if is_pagination:
@@ -2383,17 +2316,7 @@ def _text_looks_garbage(text):
     return False
 
 
-_TITLE_KEYWORDS = (
-    "निविदा", "विज्ञापन", "सूचना", "नोटिस", "भर्ती", "परीक्षा",
-    "परिणाम", "आवेदन", "रिक्त", "पद", "नियुक्ति", "चयन", "शुद्धिपत्र",
-    "corrigendum", "amendment", "notice", "tender", "advertisement",
-    "recruitment", "vacancy", "result", "notification", "circular",
-    "admission", "exam", "revaluation", "migration", "scholarship",
-    "fee", "syllabus", "timetable", "counselling", "placement",
-    "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र",
-    "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क"
-)
-
+_TITLE_KEYWORDS = ("निविदा", "विज्ञापन", "सूचना", "नोटिस", "भर्ती", "परीक्षा", "परिणाम", "आवेदन", "रिक्त", "पद", "नियुक्ति", "चयन", "शुद्धिपत्र", "corrigendum", "amendment", "notice", "tender", "advertisement", "recruitment", "vacancy", "result", "notification", "circular", "admission", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "placement", "convocation", "registration", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क")
 _BOILERPLATE_HINTS = ("पता:", "address:", "फोन", "phone", "email", "e-mail", "website", "वेबसाइट", "दूरभाष", "fax", "फैक्स")
 
 
@@ -2461,29 +2384,23 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
         except Exception as exc:
             print(f"[WARN] PDF download failed for {pdf_url}: {exc}", file=sys.stderr)
             return None, "", False, "download_error", ""
-
     content_hash = hashlib.sha256(content).hexdigest()
     cached = _get_ocr_cache(content_hash)
     if cached:
         cached_cleaned, cached_raw, cached_method = cached
         print(f"[OCR-CACHE] Same content, skipping OCR ({len(cached_cleaned)} chars, was={cached_method}): {pdf_url[:70]}", file=sys.stderr)
         return (content, cached_cleaned, cached_method != "plumber", cached_method, cached_raw)
-
     ocr_start = time.monotonic()
-
     def _ocr_deadline_hit():
         if deadline and time.monotonic() > deadline: return True
         if time.monotonic() - ocr_start > MAX_PDF_OCR_SECONDS:
             print(f"[OCR-CAP] Per-PDF OCR time cap ({MAX_PDF_OCR_SECONDS}s) hit", file=sys.stderr)
             return True
         return False
-
     raw_text = _extract_pdf_text_plumber(content)
     extraction_method = "plumber"
-
     if _text_looks_thin(raw_text):
         print(f"[INFO] PDF thin ({len(raw_text)} chars). Starting OCR pipeline...", file=sys.stderr)
-
         if GEMINI_PDF_OCR_ENABLED and not _GEMINI_QUOTA_EXHAUSTED and not _ocr_deadline_hit():
             print("[OCR] Trying Gemini...", file=sys.stderr)
             gemini_text = _extract_with_gemini_pdf(content)
@@ -2491,7 +2408,6 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- GEMINI OCR ---\n\n{gemini_text}" if raw_text.strip() else gemini_text
                 extraction_method = "gemini"
                 print(f"[INFO] Gemini OCR succeeded ({len(gemini_text)} chars)", file=sys.stderr)
-
         if extraction_method == "plumber" and PADDLEOCR_ENABLED and _PADDLEOCR_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying PaddleOCR (Devanagari)...", file=sys.stderr)
             paddle_text = _extract_pdf_text_paddleocr(content)
@@ -2499,7 +2415,6 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- PADDLEOCR ---\n\n{paddle_text}" if raw_text.strip() else paddle_text
                 extraction_method = "paddleocr"
                 print(f"[INFO] PaddleOCR succeeded ({len(paddle_text)} chars)", file=sys.stderr)
-
         if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying Tesseract...", file=sys.stderr)
             tess_text = _extract_pdf_text_tesseract(content)
@@ -2507,7 +2422,6 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- TESSERACT ---\n\n{tess_text}" if raw_text.strip() else tess_text
                 extraction_method = "tesseract"
                 print(f"[INFO] Tesseract succeeded ({len(tess_text)} chars)", file=sys.stderr)
-
         if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying RapidOCR...", file=sys.stderr)
             rocr_text = _extract_pdf_text_rapidocr(content)
@@ -2515,13 +2429,10 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- RAPIDOCR ---\n\n{rocr_text}" if raw_text.strip() else rocr_text
                 extraction_method = "rapidocr"
                 print(f"[INFO] RapidOCR succeeded ({len(rocr_text)} chars)", file=sys.stderr)
-
     cleaned = clean_text(raw_text, MAX_PDF_TEXT_CHARS)
     raw_for_title = raw_text[:MAX_PDF_RAW_TEXT_CHARS]
-
     if cleaned and len(cleaned) >= 20:
         _put_ocr_cache(content_hash, cleaned, raw_for_title, extraction_method)
-
     return (content, cleaned, extraction_method != "plumber", extraction_method, raw_for_title)
 
 
@@ -2552,10 +2463,7 @@ def keyword_fallback(items):
         summary = ""
         if pdf_hint and pdf_hint.lower() != title_text.lower(): summary = pdf_hint
         elif ctx and ctx.lower() != title_text.lower() and len(ctx) >= 20: summary = ctx
-        result[str(index)] = {
-            "important": True, "category": category, "summary": clean_text(summary, 180), "title_hi": None,
-            "unverified": not keyword_match, "confidence": "high" if keyword_match else "low", "pre_classified": False,
-        }
+        result[str(index)] = {"important": True, "category": category, "summary": clean_text(summary, 180), "title_hi": None, "unverified": not keyword_match, "confidence": "high" if keyword_match else "low", "pre_classified": False}
     return result
 
 
@@ -2603,9 +2511,7 @@ def _clean_extra_details(raw):
     if not isinstance(raw, list): return []
     out = []
     seen_labels = set()
-    skip_labels = {
-        "qualification", "age", "age limit", "age_limit", "no of post", "no of posts", "number of post", "total post", "total posts", "honorarium", "salary", "pay scale", "pay_scale", "application fee", "application_fee", "last date", "last_date", "start date", "end date", "publish date", "published date",
-    }
+    skip_labels = {"qualification", "age", "age limit", "age_limit", "no of post", "no of posts", "number of post", "total post", "total posts", "honorarium", "salary", "pay scale", "pay_scale", "application fee", "application_fee", "last date", "last_date", "start date", "end date", "publish date", "published date"}
     for item in raw[:15]:
         if not isinstance(item, dict): continue
         label = clean_text(str(item.get("label", "")), 100)
@@ -2903,9 +2809,7 @@ def send_notification_with_pdf(token, chat_id, record, full_message):
     return send_telegram_document(token, chat_id, pdf_bytes, filename, caption=caption)
 
 
-CATEGORY_EMOJI = {
-    "admission": "🎓", "result": "📊", "admit_card": "🎫", "answer_key": "🔑", "exam_schedule": "📅", "revaluation": "🔄", "migration_certificate": "📜", "fee_structure": "💳", "academic_calendar": "🗓️", "syllabus": "📚", "timetable": "⏰", "scholarship": "🎯", "placement": "💼", "tender": "📑", "vacancy": "💼", "notice": "📌", "other": "📎",
-}
+CATEGORY_EMOJI = {"admission": "🎓", "result": "📊", "admit_card": "🎫", "answer_key": "🔑", "exam_schedule": "📅", "revaluation": "🔄", "migration_certificate": "📜", "fee_structure": "💳", "academic_calendar": "🗓️", "syllabus": "📚", "timetable": "⏰", "scholarship": "🎯", "placement": "💼", "tender": "📑", "vacancy": "💼", "notice": "📌", "other": "📎"}
 
 
 def _safe_str(value, limit=300):
@@ -2923,11 +2827,9 @@ def _is_devanagari(s):
 _LABELS_HI = {
     "reference_number": "संदर्भ संख्या", "issuing_authority": "जारीकर्ता प्राधिकरण", "issuing_date": "जारी तारीख़", "contact_person": "संपर्क व्यक्ति", "contact_number": "संपर्क नंबर", "email": "ईमेल", "helpline_number": "हेल्पलाइन नंबर", "official_address": "कार्यालय पता", "important_instructions": "ज़रूरी निर्देश", "course_name": "कोर्स", "course_level": "कोर्स स्तर", "session": "सत्र", "admission_mode": "प्रवेश मोड", "entrance_exam_name": "प्रवेश परीक्षा", "eligibility": "योग्यता", "eligibility_marks": "योग्यता मार्क्स", "age_criteria": "उम्र मानदंड", "application_fee": "आवेदन शुल्क", "fee_structure": "शुल्क संरचना", "total_seats": "कुल सीटें", "reservation_details": "आरक्षण विवरण", "apply_start_date": "आवेदन शुरू", "last_date": "अंतिम तिथि", "counselling_date": "काउंसलिंग तिथि", "apply_link": "ऑनलाइन आवेदन", "prospectus_link": "प्रॉस्पेक्टस", "documents_required": "आवश्यक दस्तावेज़", "hostel_available": "हॉस्टल उपलब्ध", "result_for": "परिणाम किसका", "exam_name": "परीक्षा", "semester": "सेमेस्टर", "result_date": "परिणाम तिथि", "result_link": "परिणाम देखें", "result_type": "परिणाम प्रकार", "merit_list_link": "मेरिट लिस्ट", "cutoff_marks": "कटऑफ़ मार्क्स", "total_selected": "कुल चयनित", "next_stage": "अगला चरण", "next_stage_date": "अगले चरण की तिथि", "rechecking_last_date": "रीचेकिंग अंतिम तिथि", "rechecking_link": "रीचेकिंग लिंक", "rechecking_fee": "रीचेकिंग शुल्क", "exam_date": "परीक्षा तिथि", "exam_time": "परीक्षा समय", "exam_duration": "परीक्षा अवधि", "exam_center": "परीक्षा केंद्र", "reporting_time": "रिपोर्टिंग समय", "download_start_date": "डाउनलोड शुरू", "download_last_date": "डाउनलोड अंतिम", "admit_card_link": "एडमिट कार्ड डाउनलोड", "instructions": "निर्देश", "total_questions": "कुल प्रश्न", "answer_key_link": "उत्तर कुंजी देखें", "objection_start_date": "आपत्ति शुरू", "objection_last_date": "आपत्ति अंतिम", "objection_fee": "आपत्ति शुल्क", "per_question_fee": "प्रति प्रश्न शुल्क", "objection_mode": "आपत्ति मोड", "objection_address": "आपत्ति पता", "payment_mode": "भुगतान मोड", "exam_start_date": "परीक्षा शुरू", "exam_end_date": "परीक्षा समाप्त", "timetable_link": "टाइम टेबल देखें", "subject_list": "विषय सूची", "paper_code": "पेपर कोड", "practical_dates": "प्रैक्टिकल तिथियाँ", "viva_dates": "वाइवा तिथियाँ", "revaluation_start_date": "पुनर्मूल्यांकन शुरू", "revaluation_last_date": "पुनर्मूल्यांकन अंतिम", "revaluation_fee": "पुनर्मूल्यांकन शुल्क", "revaluation_mode": "पुनर्मूल्यांकन मोड", "certificate_type": "प्रमाण पत्र प्रकार", "processing_time": "प्रोसेसिंग समय", "fee_type": "शुल्क प्रकार", "amount": "राशि", "late_fee": "विलंब शुल्क", "payment_link": "भुगतान लिंक", "event_type": "कार्यक्रम प्रकार", "event_date": "कार्यक्रम तिथि", "event_description": "विवरण", "calendar_link": "कैलेंडर देखें", "syllabus_link": "पाठ्यक्रम देखें", "effective_from": "प्रभावी तिथि से", "scheme_name": "योजना", "scholarship_amount": "छात्रवृत्ति राशि", "applicable_category": "किस श्रेणी के लिए", "income_limit": "आय सीमा", "apply_mode": "आवेदन मोड", "portal_name": "पोर्टल", "company_name": "कंपनी", "job_role": "जॉब रोल", "package": "पैकेज", "location": "स्थान", "drive_date": "ड्राइव तिथि", "tender_no": "निविदा संख्या", "tender_type": "निविदा प्रकार", "work_description": "कार्य विवरण", "estimated_cost": "अनुमानित लागत", "emd_amount": "EMD राशि", "tender_fee": "निविदा शुल्क", "submission_last_date": "जमा अंतिम तिथि", "opening_date": "खोलने की तिथि", "tender_document_link": "निविदा दस्तावेज़", "eligibility_criteria": "पात्रता मानदंड", "post_name": "पद का नाम", "total_posts": "कुल पद", "post_breakdown": "पद विवरण", "qualification": "योग्यता", "age_limit": "उम्र सीमा", "pay_scale": "वेतन", "advertisement_no": "विज्ञापन संख्या", "selection_process": "चयन प्रक्रिया", "experience_required": "अनुभव आवश्यक", "posting_location": "पोस्टिंग स्थान", "interview_date": "इंटरव्यू तिथि", "venue": "स्थान", "subject": "विषय", "notice_type": "सूचना प्रकार", "applicable_to": "किस पर लागू", "action_required": "क्या करना है", "action_deadline": "अंतिम तिथि", "effective_date": "प्रभावी तिथि", "supersedes": "किसे रद्द करता है", "order_link": "आदेश देखें", "full_content": "पूरा विवरण", "other_details": "अन्य जानकारी", "read_full": "पूरी सूचना देखें",
 }
-
 _LABELS_EN = {
     "reference_number": "Reference No", "issuing_authority": "Issuing Authority", "issuing_date": "Issuing Date", "contact_person": "Contact Person", "contact_number": "Contact Number", "email": "Email", "helpline_number": "Helpline", "official_address": "Official Address", "important_instructions": "Important Instructions", "course_name": "Course", "course_level": "Course Level", "session": "Session", "admission_mode": "Admission Mode", "entrance_exam_name": "Entrance Exam", "eligibility": "Eligibility", "eligibility_marks": "Eligibility Marks", "age_criteria": "Age Criteria", "application_fee": "Application Fee", "fee_structure": "Fee Structure", "total_seats": "Total Seats", "reservation_details": "Reservation Details", "apply_start_date": "Application Starts", "last_date": "Last Date", "counselling_date": "Counselling Date", "apply_link": "Apply Online", "prospectus_link": "Prospectus", "documents_required": "Documents Required", "hostel_available": "Hostel Available", "result_for": "Result For", "exam_name": "Exam", "semester": "Semester", "result_date": "Result Date", "result_link": "Check Result", "result_type": "Result Type", "merit_list_link": "Merit List", "cutoff_marks": "Cutoff Marks", "total_selected": "Total Selected", "next_stage": "Next Stage", "next_stage_date": "Next Stage Date", "rechecking_last_date": "Rechecking Last Date", "rechecking_link": "Rechecking Link", "rechecking_fee": "Rechecking Fee", "exam_date": "Exam Date", "exam_time": "Exam Time", "exam_duration": "Exam Duration", "exam_center": "Exam Center", "reporting_time": "Reporting Time", "download_start_date": "Download Starts", "download_last_date": "Download Last Date", "admit_card_link": "Download Admit Card", "instructions": "Instructions", "total_questions": "Total Questions", "answer_key_link": "View Answer Key", "objection_start_date": "Objection Starts", "objection_last_date": "Objection Last Date", "objection_fee": "Objection Fee", "per_question_fee": "Per Question Fee", "objection_mode": "Objection Mode", "objection_address": "Objection Address", "payment_mode": "Payment Mode", "exam_start_date": "Exam Starts", "exam_end_date": "Exam Ends", "timetable_link": "Timetable", "subject_list": "Subjects", "paper_code": "Paper Code", "practical_dates": "Practical Dates", "viva_dates": "Viva Dates", "revaluation_start_date": "Revaluation Starts", "revaluation_last_date": "Revaluation Last Date", "revaluation_fee": "Revaluation Fee", "revaluation_mode": "Revaluation Mode", "certificate_type": "Certificate Type", "processing_time": "Processing Time", "fee_type": "Fee Type", "amount": "Amount", "late_fee": "Late Fee", "payment_link": "Payment Link", "event_type": "Event Type", "event_date": "Event Date", "event_description": "Description", "calendar_link": "View Calendar", "syllabus_link": "View Syllabus", "effective_from": "Effective From", "scheme_name": "Scheme", "scholarship_amount": "Scholarship Amount", "applicable_category": "Applicable Category", "income_limit": "Income Limit", "apply_mode": "Application Mode", "portal_name": "Portal", "company_name": "Company", "job_role": "Job Role", "package": "Package", "location": "Location", "drive_date": "Drive Date", "tender_no": "Tender No", "tender_type": "Tender Type", "work_description": "Work Description", "estimated_cost": "Estimated Cost", "emd_amount": "EMD", "tender_fee": "Tender Fee", "submission_last_date": "Submission Last Date", "opening_date": "Opening Date", "tender_document_link": "Tender Document", "eligibility_criteria": "Eligibility", "post_name": "Post Name", "total_posts": "Total Posts", "post_breakdown": "Post-wise Breakdown", "qualification": "Qualification", "age_limit": "Age Limit", "pay_scale": "Pay Scale", "advertisement_no": "Advertisement No", "selection_process": "Selection Process", "experience_required": "Experience Required", "posting_location": "Posting Location", "interview_date": "Interview Date", "venue": "Venue", "subject": "Subject", "notice_type": "Notice Type", "applicable_to": "Applicable To", "action_required": "Action Required", "action_deadline": "Action Deadline", "effective_date": "Effective Date", "supersedes": "Supersedes", "order_link": "View Order", "full_content": "Full Content", "other_details": "Other Details", "read_full": "View Full Notice",
 }
-
 _CATEGORY_NAMES_HI = {"admission": "प्रवेश", "result": "परिणाम", "admit_card": "प्रवेश पत्र", "answer_key": "उत्तर कुंजी", "exam_schedule": "परीक्षा कार्यक्रम", "revaluation": "पुनर्मूल्यांकन", "migration_certificate": "माइग्रेशन / प्रमाण पत्र", "fee_structure": "शुल्क संरचना", "academic_calendar": "शैक्षणिक कैलेंडर", "syllabus": "पाठ्यक्रम", "timetable": "समय सारिणी", "scholarship": "छात्रवृत्ति", "placement": "प्लेसमेंट", "tender": "निविदा", "vacancy": "भर्ती", "notice": "सूचना", "other": "अन्य"}
 _CATEGORY_NAMES_EN = {"admission": "Admission", "result": "Result", "admit_card": "Admit Card", "answer_key": "Answer Key", "exam_schedule": "Exam Schedule", "revaluation": "Revaluation", "migration_certificate": "Migration / Certificate", "fee_structure": "Fee Structure", "academic_calendar": "Academic Calendar", "syllabus": "Syllabus", "timetable": "Timetable", "scholarship": "Scholarship", "placement": "Placement", "tender": "Tender", "vacancy": "Vacancy", "notice": "Notice", "other": "Other"}
 _DISCLAIMER_HI = "⚠️ एक बार ऑफिशियल नोटिफिकेशन ज़रूर पढ़ें — सभी डिटेल्स खुद कन्फर्म कर लें।"
@@ -3053,9 +2955,7 @@ def _format_notice(lines, c):
     _line(lines, "📝", "subject", _safe_str(c.get("subject"))); _line(lines, "📋", "notice_type", _safe_str(c.get("notice_type"))); _line(lines, "🔖", "reference_number", _safe_str(c.get("reference_number"))); _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority"))); _line(lines, "👥", "applicable_to", _safe_str(c.get("applicable_to"))); _line(lines, "📋", "action_required", _safe_str(c.get("action_required"))); _line(lines, "📅", "action_deadline", _safe_str(c.get("action_deadline"))); _line(lines, "📋", "supersedes", _safe_str(c.get("supersedes"))); _line(lines, "📅", "effective_date", _safe_str(c.get("effective_date"))); _line(lines, "📋", "important_instructions", _safe_str(c.get("important_instructions"))); _link_line(lines, "🔗", "order_link", _safe_str(c.get("order_link"), 500)); _format_extra_details(lines, c)
 
 
-_FORMATTERS = {
-    "admission": _format_admission, "result": _format_result, "admit_card": _format_admit_card, "answer_key": _format_answer_key, "exam_schedule": _format_exam_schedule, "revaluation": _format_revaluation, "migration_certificate": _format_migration_certificate, "fee_structure": _format_fee_structure, "academic_calendar": _format_academic_calendar, "syllabus": _format_syllabus, "timetable": _format_timetable, "scholarship": _format_scholarship, "placement": _format_placement, "tender": _format_tender, "vacancy": _format_vacancy, "notice": _format_notice,
-}
+_FORMATTERS = {"admission": _format_admission, "result": _format_result, "admit_card": _format_admit_card, "answer_key": _format_answer_key, "exam_schedule": _format_exam_schedule, "revaluation": _format_revaluation, "migration_certificate": _format_migration_certificate, "fee_structure": _format_fee_structure, "academic_calendar": _format_academic_calendar, "syllabus": _format_syllabus, "timetable": _format_timetable, "scholarship": _format_scholarship, "placement": _format_placement, "tender": _format_tender, "vacancy": _format_vacancy, "notice": _format_notice}
 
 
 def format_message(site, item, classification=None):
@@ -3234,8 +3134,7 @@ def refresh_stats(state):
 
 def _is_non_notice_pdf(record):
     url_lower = (record.get("url") or "").lower()
-    if not (url_lower.endswith(".pdf") or ".pdf" in url_lower):
-        return False
+    if not (url_lower.endswith(".pdf") or ".pdf" in url_lower): return False
     combined = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
     return not any(kw in combined for kw in _NOTICE_KEYWORDS)
 
@@ -3245,29 +3144,17 @@ def _should_fetch_pdf(record):
     if int(record.get("pdf_attempts", 0)) >= MAX_PDF_ATTEMPTS: return False
     url = record.get("url", "")
     url_lower = url.lower()
-
     try:
         parsed = urlparse(url)
         if parsed.path in ("", "/"): return False
     except Exception: pass
-
     if url_lower.endswith(".pdf") or ".pdf" in url_lower:
         title_lower = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
         if not any(kw in title_lower for kw in _NOTICE_KEYWORDS):
             print(f"[SKIP-PDF] Non-notice PDF (faculty/other): {title_lower[:60]}", file=sys.stderr)
             return False
-
-    block_patterns = (
-        "/past-notices", "/past_notices", "/whats-new", "/whats_new",
-        "/notice_category", "/notice-category", "/document-category",
-        "/document_category", "/archive", "/search",
-        "/contact-us", "/contact_us", "/contactus",
-        "/about-district", "/about_district",
-        "/photo-gallery", "/photo_gallery", "/video-gallery", "/video_gallery",
-        "/anti-ragging", "/grievance", "/rti",
-    )
+    block_patterns = ("/past-notices", "/past_notices", "/whats-new", "/whats_new", "/notice_category", "/notice-category", "/document-category", "/document_category", "/archive", "/search", "/contact-us", "/contact_us", "/contactus", "/about-district", "/about_district", "/photo-gallery", "/photo_gallery", "/video-gallery", "/video_gallery", "/anti-ragging", "/grievance", "/rti")
     if any(pat in url_lower for pat in block_patterns): return False
-
     if any(hint in url_lower for hint in ("/downloadfile", "/download_file", "/downloadpdf", "/download_pdf", "/getfile", "/showfile", "/viewfile", "/filedownload", "/writereaddata/", "/uploadfile/", "/storage/notices/", "/storage/notice/", "/documents/notice", "/notice-documents/")): return True
     if record.get("is_pdf", False): return True
     return False
@@ -3278,15 +3165,10 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
     if not targets: return
     default_timeout = scan["request_timeout_seconds"]
     def _fetch_one(record):
-        if send_deadline and time.monotonic() > send_deadline:
-            return None, "", False, "time_limit", ""
+        if send_deadline and time.monotonic() > send_deadline: return None, "", False, "time_limit", ""
         try:
             timeout = _SITE_TIMEOUT_BY_ID.get(record.get("site_id"), default_timeout)
-            return download_pdf_content(
-                record["url"], timeout,
-                verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True),
-                deadline=send_deadline,
-            )
+            return download_pdf_content(record["url"], timeout, verify_ssl=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True), deadline=send_deadline)
         except Exception as exc:
             print(f"[WARN] PDF fetch error: {exc}", file=sys.stderr)
             return None, "", False, "error", ""
@@ -3324,7 +3206,8 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
                     if pdf_summary and not record.get("pdf_summary_hint"): record["pdf_summary_hint"] = pdf_summary
                 except Exception as exc: print(f"[WARN] PDF summary extraction failed: {exc}", file=sys.stderr)
                 effective_title = record.get("explicit_title") or record.get("title", "")
-                if _is_stale_notice(effective_title, record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=text):
+                # strict_pdf_date=True: PDF content date/session overrides HTML upload_date
+                if _is_stale_notice(effective_title, record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=text, strict_pdf_date=True):
                     record["status"] = "baseline"
                     record["classification"] = None
                     record["summary"] = ""
@@ -3408,7 +3291,6 @@ def main():
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     _GEMINI_API_KEY = gemini_key or (_GEMINI_KEYS_POOL[0] if _GEMINI_KEYS_POOL else "")
-
     if not token or not chat_id:
         print("[FATAL] TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.", file=sys.stderr)
         return 2
@@ -3480,9 +3362,7 @@ def main():
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
-                state["items"].setdefault(iid, {
-                    "site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None,
-                })
+                state["items"].setdefault(iid, {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None})
             ss["baseline_complete"] = True
             ss["baseline_completed_at"] = utc_now()
             ss.pop("baseline_pending_reason", None)
@@ -3512,9 +3392,7 @@ def main():
                         stale_record["summary"] = ""
                         stale_record["last_error"] = f"Stale notice ({reason})"
                 else:
-                    state["items"][iid] = {
-                        "site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate.get("title", ""), "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale notice ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None,
-                    }
+                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate.get("title", ""), "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale notice ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                     site_items_list.append((iid, candidate.get("title", ""), candidate.get("url", "")))
                 print(f"[{reason}] {effective_cand_title[:80]}", file=sys.stderr)
                 continue
@@ -3555,14 +3433,10 @@ def main():
                 upload_dt = _parse_upload_date(candidate.get("upload_date"))
                 if _is_stale_notice(effective_cand_title, candidate.get("context", ""), candidate["url"], upload_date=upload_dt):
                     reason = _classify_stale_reason(effective_cand_title, candidate.get("context", ""), candidate["url"], upload_date=upload_dt) or "STALE"
-                    state["items"][iid] = {
-                        "site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None,
-                    }
+                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                     site_items_list.append((iid, candidate["title"], candidate["url"]))
                     continue
-                record = {
-                    "site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "pending", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None,
-                }
+                record = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "pending", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                 state["items"][iid] = record
                 site_items_list.append((iid, record["title"], record["url"]))
             else:
@@ -3678,7 +3552,6 @@ def main():
                     record["preclassified_at"] = utc_now()
                     print(f"[PRE-CLASSIFIED] {record.get('title', '')[:70]}")
                 elif pre is False:
-                    # CHANGE C: Use empty context in this second stale check (log cosmetics only)
                     if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), "", record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")):
                         record["classification"] = None
                         record["summary"] = ""
