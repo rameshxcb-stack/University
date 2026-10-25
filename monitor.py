@@ -1678,11 +1678,13 @@ def pending_priority(record, keywords, now=None):
     return urgency + score + age_bonus, age_days
 
 
+# CHANGE A: Added 5 keywords to fix short titles being PRE-IGNORED
 _PRECLASS_STRONG = (
     "admission", "result", "admit card", "answer key", "examination", "exam", "revaluation", "migration", "scholarship", "fee", "syllabus", "timetable", "counselling", "recruitment", "vacancy", "tender", "notice", "notification", "placement", "convocation", "registration", "result", "notice", "notification", "examination", "exam form", "exam schedule", "exam programme", "marksheet", "merit", "advertisement", "प्रवेश", "परिणाम", "प्रवेश पत्र", "उत्तर कुंजी", "परीक्षा", "पुनर्मूल्यांकन", "छात्रवृत्ति", "शुल्क", "भर्ती", "निविदा", "सूचना", "अधिसूचना", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परीक्षा फॉर्म",
     "dy. director", "deputy director", "principal", "associate dean", "backlog",
     "on contractual basis", "on contract basis", "for the post of",
     "अनुबंध के आधार पर", "पद के लिए",
+    "semester calendar", "academic calendar", "award of degree", "list of documents", "not qualified",
 )
 _PRECLASS_NAV_ONLY = ("photo gallery", "video gallery", "site map", "web policies", "screen reader", "feedback", "anti-ragging", "grievance cell")
 _DEFAULT_EXCLUDED_TITLE_SIGNALS = ("gst return", "income tax", "annual report", "balance sheet", "minutes of meeting", "right to information", "rti application")
@@ -1725,6 +1727,8 @@ def _keyword_pre_classify(record, excluded_signals=None):
                 r'\b(?:notice|notification)\s+(?:for|regarding|about)\b',
                 r'\b(?:apply|application|form[\s-]?fill|fee[\s-]?payment)\s+(?:date|last|deadline|online)\b',
                 r'\b(?:advertisement|advt\.?)\s+for\s+the\s+post\b',
+                # CHANGE B: Allow these legit terms to bypass the 8+ word filter
+                r'\b(?:semester\s+calendar|academic\s+calendar|award\s+of\s+degree|list\s+of\s+documents|not\s+qualified)\b',
             ]
             if not any(re.search(p, title) for p in strong_notice_patterns):
                 print(f"[NAV-FILTER] long-no-notice: {title[:80]}", file=sys.stderr)
@@ -1929,13 +1933,6 @@ def extract_candidates(html_text, page_url, site, scan):
             "is_pdf": is_pdf_link, "score": score + pdf_bonus, "upload_date": upload_dt.isoformat() if upload_dt else None,
         })
 
-    # =========================================================
-    # VBU-ONLY FIX: Catch JS download buttons (onclick attribute)
-    # that are not normal <a> links. Guarded by site id, so this
-    # block can NEVER affect any other university. Robust title
-    # extraction: heading (h1-h6) → bold (b/strong) → first line
-    # of context. So HTML structure changes don't break it.
-    # =========================================================
     if site.get("id") == "vbu-hazaribagh":
         for btn in soup.find_all(attrs={"onclick": True}):
             onclick_text = btn.get("onclick", "") or ""
@@ -1979,7 +1976,6 @@ def extract_candidates(html_text, page_url, site, scan):
                 "url": pdf_url, "title": title, "context": context, "source_page": page_url,
                 "is_pdf": True, "score": 10, "upload_date": upload_dt_vbu.isoformat() if upload_dt_vbu else None,
             })
-    # =========================================================
 
     def _sort_key(item):
         dt_str = item.get("upload_date")
@@ -3682,7 +3678,8 @@ def main():
                     record["preclassified_at"] = utc_now()
                     print(f"[PRE-CLASSIFIED] {record.get('title', '')[:70]}")
                 elif pre is False:
-                    if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")):
+                    # CHANGE C: Use empty context in this second stale check (log cosmetics only)
+                    if _is_stale_notice(record.get("explicit_title") or record.get("title", ""), "", record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")):
                         record["classification"] = None
                         record["summary"] = ""
                         record["status"] = "baseline"
