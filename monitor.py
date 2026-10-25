@@ -69,6 +69,8 @@ TELEGRAM_RETRY_WINDOW_HOURS = 168
 TELEGRAM_RETRY_BASE_MINUTES = 20
 TELEGRAM_RETRY_MAX_MINUTES = 360
 MAX_PDF_SEND_BYTES = 45 * 1024 * 1024
+MAX_HTML_DOWNLOAD_BYTES = 8 * 1024 * 1024
+ALLOW_INSECURE_TLS = os.getenv("ALLOW_INSECURE_TLS", "false").strip().casefold() in {"1", "true", "yes", "on"}
 MAX_GEMINI_PDF_BYTES = 18 * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "8"))
 MAX_PDF_TEXT_CHARS = 4000
@@ -198,7 +200,7 @@ def _html_looks_like_js_pdf_viewer(html_text):
     return any(m in lower for m in _JS_PDF_VIEWER_MARKERS)
 
 
-def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_selector=None, wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None):
+def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_selector=None, wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None, ignore_https_errors=False):
     if not _PLAYWRIGHT_AVAILABLE or not JS_RENDER_ENABLED: return None, url, "playwright_disabled"
     timeout_ms = max(1000, int(timeout_ms or JS_RENDER_TIMEOUT_MS))
     wait_until = wait_until or JS_WAIT_UNTIL
@@ -213,7 +215,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
             try:
-                context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=True, extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
+                context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=bool(ignore_https_errors), extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
                 try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
@@ -305,12 +307,29 @@ def _is_notice_document_url(url):
 
 
 def _looks_like_menu_dump(title):
+    """Detect navigation/footer text masquerading as a notice title."""
     if not title: return False
-    words = title.split()
+    text = re.sub(r"\s+", " ", str(title)).strip().casefold()
+    words = text.split()
     if len(words) < 4: return False
-    first_words = " ".join(words[:8]).lower()
-    count = sum(1 for sig in _STRICT_EARLY_NAV_SIGNALS if _match_signal(first_words, sig))
-    return count >= 2
+
+    # Keep these phrases specific to common site navigation; do not reject a
+    # genuine title just because it contains one generic word such as admission.
+    nav_phrases = (
+        "about us", "an introduction", "director administration",
+        "university vice-chancellor", "vice chancellor", "vice-chancellor",
+        "citizen charter", "citizen's charter", "how to reach", "contact us",
+        "academics departments", "departments faculty", "admission info",
+        "multidisciplinary", "skip to content", "site map", "sitemap",
+        "right to information", "about university", "vision mission",
+        "director's desk", "vc's desk", "administration academics",
+    )
+    phrase_hits = sum(1 for phrase in nav_phrases if phrase in text)
+    first_words = " ".join(words[:16])
+    early_hits = sum(1 for sig in _STRICT_EARLY_NAV_SIGNALS if _match_signal(first_words, sig))
+    # Menu dumps usually contain a chain of unrelated navigation labels.
+    # A long title with multiple specific menu phrases is not a useful notice.
+    return phrase_hits >= 2 or (phrase_hits >= 1 and early_hits >= 2) or early_hits >= 4
 
 
 def _is_garbage_title(title):
@@ -398,8 +417,11 @@ def _resolve_title(item):
         if not (context.startswith("http://") or context.startswith("https://")):
             return context[:200]
     slug = _title_from_url(url, min_len=5)
-    if slug: return slug
-    return "Notice"
+    if slug and not _is_generic_title(slug) and not _looks_like_menu_dump(slug): return slug
+    filename_title = _filename_to_title(url) if _is_notice_document_url(url) else ""
+    if filename_title and not _is_generic_title(filename_title): return filename_title
+    # Never disguise a missing/garbled title as a verified plain "Notice".
+    return "Official notice (title needs verification)"
 
 
 def _get_rapidocr():
@@ -815,7 +837,7 @@ _NON_NOTICE_URL_PATTERNS = [
     re.compile(r"/notice-category(/|$)", re.I), re.compile(r"/document-category(/|$)", re.I), re.compile(r"/document_category(/|$)", re.I),
     re.compile(r"/past-notices(/|$)", re.I), re.compile(r"/past_notices(/|$)", re.I), re.compile(r"/whats-new(/|$)", re.I),
     re.compile(r"/whats_new(/|$)", re.I), re.compile(r"/category/[^/]+/?$", re.I), re.compile(r"/tag/[^/]+/?$", re.I),
-    re.compile(r"/archive/?$", re.I), re.compile(r"/directory/?$", re.I), re.compile(r"/about-district/?$", re.I),
+    re.compile(r"/archive/?$", re.I), re.compile(r"/notice/listing/?$", re.I), re.compile(r"/directory/?$", re.I), re.compile(r"/about-district/?$", re.I),
     re.compile(r"/department/?$", re.I), re.compile(r"/search(/|$)", re.I), re.compile(r"[?&]page=\d+", re.I),
     re.compile(r"[?&]paged=\d+", re.I), re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)(/|$).*(past[-_]?notices|whats[-_]?new|archive|category|notice[-_]?category|document[-_]?category|search)", re.I),
     re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)/?$", re.I),
@@ -829,7 +851,7 @@ _ARCHIVE_URL_PATTERNS = [
     re.compile(r"/page/\d+/?$", re.I), re.compile(r"/page/?$", re.I), re.compile(r"[?&]page=\d+", re.I), re.compile(r"[?&]paged=\d+", re.I),
 ]
 _GENERIC_TITLES = {
-    "archive", "more", "more...", "more…", "more....", "»", "«", ">>", "<<", "next", "previous", "prev",
+    "archive", "listing", "listing page", "सूचना", "notice", "more", "more...", "more…", "more....", "»", "«", ">>", "<<", "next", "previous", "prev",
     "back", "forward", "home", "contact", "about", "about us", "contact us", "read more", "view more",
     "view all", "show more", "see more", "load more", "learn more", "continue reading", "read more chevron_right", "view all chevron_right",
     "chevron_right", "chevron_left", "arrow_forward", "arrow_back", "click here", "here", "link",
@@ -1062,6 +1084,7 @@ def _find_pdf_link_in_html(html_text, base_url):
 
 
 def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None, verify_ssl=True):
+    """Resolve direct/HTML-wrapped PDFs without reading unbounded bodies into RAM."""
     if _visited is None: _visited = set()
     canon = canonical_url(url)
     if canon in _visited: return None, url, "already_visited"
@@ -1075,12 +1098,28 @@ def _download_with_pdf_resolution(session, url, timeout, depth=0, _visited=None,
                 if int(cl) > MAX_PDF_SEND_BYTES: return None, url, "size_limit_head"
             except (TypeError, ValueError): pass
     except Exception: pass
-    try: response = session.get(url, timeout=timeout, allow_redirects=True, verify=verify_ssl)
-    except requests.RequestException as exc: return None, url, f"request_error:{type(exc).__name__}"
-    if response.status_code >= 400: return None, url, f"http_{response.status_code}"
-    content = response.content
-    content_type = response.headers.get("content-type", "").lower()
-    final_url = response.url
+
+    try:
+        with session.get(url, timeout=timeout, allow_redirects=True, verify=verify_ssl, stream=True) as response:
+            if response.status_code >= 400: return None, url, f"http_{response.status_code}"
+            content_type = response.headers.get("content-type", "").lower()
+            final_url = response.url
+            likely_html = ("html" in content_type or "xhtml" in content_type or not content_type)
+            limit = MAX_HTML_DOWNLOAD_BYTES if likely_html else MAX_PDF_SEND_BYTES
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk: continue
+                total += len(chunk)
+                if total > limit:
+                    return None, url, "html_size_limit" if likely_html else "size_limit_stream"
+                chunks.append(chunk)
+            content = b"".join(chunks)
+    except requests.RequestException as exc:
+        return None, url, f"request_error:{type(exc).__name__}"
+    except Exception as exc:
+        return None, url, f"download_error:{type(exc).__name__}"
+
     if _looks_like_pdf_response(content, content_type, final_url): return content, final_url, "direct_pdf"
     if "html" in content_type or "xhtml" in content_type or not content_type:
         try: html_text = content.decode("utf-8", errors="ignore")
@@ -1192,6 +1231,18 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
     normalized_full = full_text.translate(_DEVA_DIGIT_TRANS)
     normalized_pdf_head = pdf_text_str[:500].translate(_DEVA_DIGIT_TRANS)
     normalized_pdf_full = pdf_text_str.translate(_DEVA_DIGIT_TRANS)
+
+    # Do not suppress a meaningful amendment/corrigendum solely because the original notice is old.
+    title_context = f"{normalized_title} {normalized_context}".casefold()
+    amendment_signal = bool(re.search(r"corrigendum|revised|revision|amended|amendment|extension|extended|last date|deadline|date extended|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अंतिम तिथि बढ़ी|अवधि बढ़ाई", title_context, re.I))
+    notice_signal = any(_match_signal(title_context, sig) for sig in _NOTICE_SIGNALS)
+    if not strict_pdf_date and amendment_signal and notice_signal:
+        return False
+    active_signal = bool(re.search(r"admission|application|recruitment|vacancy|counselling|counseling|registration|scholarship|प्रवेश|आवेदन|भर्ती|रिक्ति|काउंसलिंग|पंजीकरण|छात्रवृत्ति", title_context, re.I))
+    if active_signal:
+        future_dates = [d for d in _extract_full_dates(normalized_full) if d.date() >= now.date()]
+        if future_dates:
+            return False
 
     # STRICT PDF DATE: After PDF download, PDF content overrides HTML upload date.
     # Applies to all universities. Fixes CUJ case where HTML says "uploaded today"
@@ -1443,7 +1494,7 @@ def get_config():
         if not isinstance(raw_site, dict) or not raw_site.get("enabled", True): continue
         site = dict(raw_site)
         site["name"] = clean_text(str(site.get("name", "Unnamed Site")), 120)
-        site["url"] = canonical_url(str(site.get("url", "")))
+        site["url"] = _canonical_spa_url(str(site.get("url", "")))
         site["id"] = clean_text(str(site.get("id", site["name"])), 100)
         if not site["name"] or not is_http_url(site["url"]):
             print(f"[WARN] Skipping invalid site: {raw_site}")
@@ -1462,8 +1513,13 @@ def get_config():
         try: site["baseline_max_errors"] = max(0, min(50, int(site.get("baseline_max_errors", scan["baseline_max_errors"]))))
         except (TypeError, ValueError, OverflowError): site["baseline_max_errors"] = scan["baseline_max_errors"]
         raw_verify_ssl = site.get("verify_ssl", True)
-        if isinstance(raw_verify_ssl, str): site["verify_ssl"] = raw_verify_ssl.strip().casefold() not in {"0", "false", "no", "off"}
-        else: site["verify_ssl"] = bool(raw_verify_ssl)
+        if isinstance(raw_verify_ssl, str): requested_verify_ssl = raw_verify_ssl.strip().casefold() not in {"0", "false", "no", "off"}
+        else: requested_verify_ssl = bool(raw_verify_ssl)
+        site["verify_ssl"] = bool(requested_verify_ssl or not ALLOW_INSECURE_TLS)
+        if not site["verify_ssl"]:
+            print(f"[SECURITY-WARN] TLS verification disabled by explicit opt-in for {site['id']}; avoid this unless absolutely necessary", file=sys.stderr)
+        elif not requested_verify_ssl:
+            print(f"[SECURITY] Ignoring verify_ssl=false for {site['id']}; TLS verification remains enabled. Set ALLOW_INSECURE_TLS=true only for a temporary, trusted workaround.", file=sys.stderr)
         try: site["js_wait_after_ms"] = max(0, min(60000, int(site.get("js_wait_after_ms", JS_WAIT_AFTER_MS))))
         except (TypeError, ValueError, OverflowError): site["js_wait_after_ms"] = JS_WAIT_AFTER_MS
         raw_scroll = site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM)
@@ -1487,7 +1543,7 @@ def get_config():
 
 
 def default_state():
-    return {"version": 31, "initialized": False, "last_run": None, "items": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
+    return {"version": 32, "initialized": False, "last_run": None, "items": {}, "sent_fingerprints": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
 
 
 def load_state():
@@ -1497,6 +1553,7 @@ def load_state():
     state.setdefault("initialized", False)
     state.setdefault("last_run", None)
     state.setdefault("items", {})
+    state.setdefault("sent_fingerprints", {})
     state.setdefault("sites", {})
     state.setdefault("review_queue", {})
     state.setdefault("metrics", {})
@@ -1515,7 +1572,11 @@ def load_state():
         record["_loaded_status"] = record.get("status")
         record.setdefault("attempts", 0); record.setdefault("last_error", None); record.setdefault("summary", ""); record.setdefault("classification", None); record.setdefault("pdf_extracted", False); record.setdefault("pdf_text", ""); record.setdefault("pdf_attempts", 0); record.setdefault("ocr_used", False); record.setdefault("pdf_method", ""); record.setdefault("telegram_attempts", 0); record.setdefault("pdf_sent", False); record.setdefault("upload_date", None); record.setdefault("explicit_title", ""); record.setdefault("first_seen", utc_now()); record.setdefault("last_seen", record["first_seen"]); record.setdefault("etag", None); record.setdefault("last_modified", None); record.setdefault("pdf_hash", None); record.setdefault("pdf_hash_kind", None); record.setdefault("last_content_check_at", None)
         if not record.get("last_content_check_at"): record["last_content_check_at"] = (record.get("last_seen") or record.get("first_seen") or utc_now())
-    state["version"] = 31
+    # Rebuild compact global sent fingerprints from retained sent records (migration-safe).
+    for iid, record in state["items"].items():
+        if isinstance(record, dict) and record.get("status") == "sent":
+            _remember_sent_fingerprint(state, record, iid)
+    state["version"] = 32
     return state
 
 
@@ -1614,10 +1675,6 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
-    # VBU DEBUG (diagnostic only — safe to remove after Run #41)
-    if record.get("site_id") == "vbu-hazaribagh":
-        print(f"[VBU-DEBUG] title={record.get('title','')[:90]!r} | is_pdf={record.get('is_pdf')} | status={record.get('status')} | url={record.get('url','')[:100]}", file=sys.stderr)
-
     # PDFs skip title heuristics — Gemini reads PDF content to classify
     if record.get("is_pdf", False):
         if _is_stale_notice(
@@ -1736,30 +1793,56 @@ def find_fuzzy_match(site_items, title, url):
     return None
 
 
+def _remember_sent_fingerprint(state, record, iid=None):
+    """Keep compact exact fingerprints independently of the bounded item history."""
+    if not isinstance(record, dict): return
+    kind = record.get("pdf_hash_kind")
+    fingerprint = record.get("pdf_hash")
+    if not fingerprint or not kind: return
+    index = state.setdefault("sent_fingerprints", {})
+    key = f"{kind}:{fingerprint}"
+    item_id = str(iid or record.get("_item_id") or "")[:100]
+    existing = index.get(key) if isinstance(index.get(key), dict) else {}
+    existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
+    stamp = record.get("sent_at") or record.get("terminal_at") or existing_date or record.get("first_seen") or utc_now()
+    index[key] = {
+        "t": clean_text(str(record.get("title") or ""), 120),
+        "s": clean_text(str(record.get("site_id") or ""), 60),
+        "d": str(stamp)[:40],
+        "i": item_id,
+    }
+
+
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
-    new_site = record.get("site_id")
     if not new_hash or not new_kind:
         html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
         if not html_hash: return None
-        new_hash = html_hash
-        new_kind = "html-v1"
-    if not new_site: return None
+        new_hash, new_kind = html_hash, "html-v1"
     new_title_norm = _normalize_title(record.get("title", ""))
+
+    # Exact PDF fingerprints are global across universities and do not require title equality.
+    if new_kind != "html-v1":
+        indexed = state.get("sent_fingerprints", {}).get(f"{new_kind}:{new_hash}")
+        if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
+            return indexed.get("t") or "previously sent identical PDF"
+
     for other_iid, other in state.get("items", {}).items():
         if other_iid == exclude_iid or not isinstance(other, dict): continue
         if other.get("status") != "sent": continue
-        if other.get("site_id") != new_site: continue
+        other_hash = None
         if new_kind == "html-v1":
             other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
         else:
-            other_hash = other.get("pdf_hash")
             if other.get("pdf_hash_kind") != new_kind: continue
+            other_hash = other.get("pdf_hash")
         if not other_hash or other_hash != new_hash: continue
-        other_title_norm = _normalize_title(other.get("title", ""))
-        if new_title_norm and other_title_norm:
-            if fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 70: continue
+        # HTML title/context fingerprints are less reliable than byte/content PDF hashes.
+        if new_kind == "html-v1":
+            other_title_norm = _normalize_title(other.get("title", ""))
+            if not new_title_norm or not other_title_norm or fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 85:
+                continue
         return other.get("title") or other_iid
     return None
 
@@ -1783,6 +1866,22 @@ def extract_candidates(html_text, page_url, site, scan):
         if _is_navigation_url(href): continue
 
         title = clean_text(a.get_text(" ", strip=True), 300)
+        # A link back to the site's own homepage is never a notice by itself.
+        # This prevents a navigation block being emitted as "Notice".
+        try:
+            href_parsed = urlparse(href)
+            page_parsed = urlparse(page_url)
+            href_is_home = (
+                href_parsed.scheme.lower() == page_parsed.scheme.lower()
+                and href_parsed.netloc.lower() == page_parsed.netloc.lower()
+                and (href_parsed.path or "/").rstrip("/") == ""
+                and not href_parsed.query
+                and not href_parsed.fragment
+            )
+        except Exception:
+            href_is_home = False
+        if href_is_home:
+            continue
         parent = a.find_parent("tr")
         if parent is None: parent = a.find_parent(["li", "article", "section"])
         if parent is None: parent = a.find_parent(["div", "td"])
@@ -1844,6 +1943,19 @@ def extract_candidates(html_text, page_url, site, scan):
                     title = p
                     break
 
+        if _looks_like_menu_dump(title):
+            repaired = _cleanup_menu_dump_title(title, url=href, explicit="")
+            if repaired and repaired != title and not _looks_like_menu_dump(repaired) and not _is_generic_title(repaired):
+                title = repaired
+            elif not _is_notice_document_url(href) and not _is_archive_url(href):
+                print(f"[MENU-DUMP-SKIP] Navigation text rejected as notice title: {title[:90]!r} ({href[:100]})", file=sys.stderr)
+                continue
+
+        if _looks_like_menu_dump(context) and (_is_generic_title(title) or len(title.split()) < 3):
+            if not _is_notice_document_url(href) and not _is_archive_url(href):
+                print(f"[MENU-CONTEXT-SKIP] Navigation-heavy context rejected: {href[:100]}", file=sys.stderr)
+                continue
+
         score = local_score(title, href, context, keywords)
         href_lower = href.lower()
         is_pdf_link = bool(is_pdf(href) or _looks_like_pdf_url(href))
@@ -1859,9 +1971,17 @@ def extract_candidates(html_text, page_url, site, scan):
         upload_dt = _extract_upload_date(a)
 
         final_title = clean_text(title, 300)
-        if not final_title or _is_generic_title(final_title): final_title = clean_text(context, 180)
-        if not final_title or _is_generic_title(final_title): final_title = _title_from_url(href, min_len=5)
-        if not final_title: final_title = "Notice"
+        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
+            final_title = clean_text(context, 180)
+        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
+            final_title = _title_from_url(href, min_len=5)
+        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
+            # Do not send navigation text under the misleading generic title "Notice".
+            # Keep genuine document links; their filename hash is a last-resort label.
+            if is_pdf_link or _is_notice_document_url(href):
+                final_title = _filename_to_title(href) or f"Official document ({hashlib.sha256(href.encode()).hexdigest()[:8]})"
+            else:
+                continue
 
         out.append({
             "url": href, "title": final_title, "context": context, "source_page": page_url,
@@ -2057,7 +2177,7 @@ def discover_site(session, site, scan):
                 can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
                 if can_browser_retry:
                     print(f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"))
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
@@ -2071,7 +2191,7 @@ def discover_site(session, site, scan):
             if response is not None and response.status_code in (403, 503):
                 if JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE:
                     print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"))
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
@@ -2108,7 +2228,7 @@ def discover_site(session, site, scan):
 
             if (should_render_js and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE):
                 print(f"[JS-RENDER] {page} (mode={js_mode})", file=sys.stderr)
-                rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"))
+                rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                 js_render_count += 1
                 if rendered_html:
                     response_text = rendered_html
@@ -2130,6 +2250,32 @@ def discover_site(session, site, scan):
             successful_pages += 1
 
             soup = BeautifulSoup(response_text, "html.parser")
+
+            # Many institutional homepages expose notices/recruitment/results
+            # inside same-site iframes. Scan those documents as pages instead
+            # of treating the parent homepage navigation as a notice.
+            for frame in soup.find_all(["iframe", "frame"], src=True):
+                frame_src = _canonical_spa_url(urljoin(final_url, frame.get("src", "").strip()))
+                if not is_http_url(frame_src) or not same_host(base_url, frame_src):
+                    continue
+                if frame_src in visited or frame_src in queue or _is_navigation_url(frame_src):
+                    continue
+                frame_label = clean_text(" ".join([
+                    frame.get("title", ""), frame.get("name", ""),
+                    frame.get("id", ""), frame.get("class", [""])[0] if frame.get("class") else ""
+                ]), 200).casefold()
+                frame_haystack = (frame_src + " " + frame_label).casefold()
+                # Include named notice feeds and iframes that look like data tables;
+                # avoid generic external widgets and maps.
+                iframe_signals = (
+                    "notice", "notification", "order", "recruit", "result", "tender",
+                    "academic", "exam", "announcement", "circular", "latest", "update",
+                    "vacancy", "career", "download", "iframe", "info-desk"
+                )
+                if any(sig in frame_haystack for sig in iframe_signals):
+                    queue.insert(0, frame_src)
+                    print(f"[IFRAME-DISCOVERY] {site['id']}: {frame_src[:140]}", file=sys.stderr)
+
             for a in soup.find_all("a", href=True):
                 href = _canonical_spa_url(urljoin(final_url, a.get("href", "")))
                 if (not is_http_url(href) or not same_host(base_url, href) or href in visited or href in queue): continue
@@ -2961,6 +3107,8 @@ _FORMATTERS = {"admission": _format_admission, "result": _format_result, "admit_
 def format_message(site, item, classification=None):
     classification = classification or {}
     raw_title = _resolve_title(item)
+    if _looks_like_menu_dump(raw_title) or _is_garbage_title(raw_title):
+        raw_title = _filename_to_title(item.get("url", "")) or "Official notice (title needs verification)"
     title_hi = _safe_str(classification.get("title_hi"), 200)
     title_is_hindi = _is_devanagari(raw_title)
     site_name = html.escape(site["name"])
@@ -3076,6 +3224,18 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
                 for _, key in sorted(active_rows):
                     if len(items) <= max_items: break
                     items.pop(key, None)
+    # Compact sent fingerprints survive eviction of full item records, preventing repeat sends.
+    fingerprints = state.setdefault("sent_fingerprints", {})
+    fingerprint_cutoff = now - timedelta(days=max(7, int(sent_retention_days)))
+    for key, entry in list(fingerprints.items()):
+        if not isinstance(entry, dict):
+            fingerprints.pop(key, None); continue
+        stamp = _parse_utc_timestamp(entry.get("d"))
+        if stamp and stamp < fingerprint_cutoff: fingerprints.pop(key, None)
+    if len(fingerprints) > max_items:
+        ordered_fingerprints = sorted(fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
+        for key, _ in ordered_fingerprints[:len(fingerprints) - max_items]: fingerprints.pop(key, None)
+
     def serialized_size():
         try:
             payload = json.dumps(state, ensure_ascii=False, indent=2, separators=(",", ": ")) + "\n"
@@ -3313,6 +3473,7 @@ def main():
     state["stats"]["runs"] = int(state["stats"].get("runs", 0)) + 1
     state["last_run"] = utc_now()
     run_errors = 0
+    partial_errors_this_run = 0
     results = {}
 
     workers = min(scan["max_workers"], len(cfg["websites"]))
@@ -3326,7 +3487,9 @@ def main():
                 if success:
                     mark_site_success(state, sid, len(candidates))
                     state["metrics"]["site_scan_success"][sid] = state["metrics"]["site_scan_success"].get(sid, 0) + 1
-                    if errors: state["metrics"]["parse_errors"] = int(state["metrics"].get("parse_errors", 0)) + len(errors)
+                    if errors:
+                        state["metrics"]["parse_errors"] = int(state["metrics"].get("parse_errors", 0)) + len(errors)
+                        partial_errors_this_run += len(errors)
                     print(f"[OK] {site['name']}: {len(candidates)} candidate(s), {len(errors)} partial error(s)")
                 else:
                     run_errors += 1
@@ -3358,7 +3521,7 @@ def main():
         result = results.get(sid, {"candidates": [], "success": False})
         candidates = result["candidates"]
         current_scan_success = bool(result["success"])
-        baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), site.get("baseline_max_errors", scan.get("baseline_max_errors", 3)))
+        baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), max(0, int(site.get("baseline_max_errors", scan.get("baseline_max_errors", 3)))))
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
@@ -3632,6 +3795,8 @@ def main():
         if ok:
             state["metrics"]["sent_notifications"] = int(state["metrics"].get("sent_notifications", 0)) + 1
             record["status"] = "sent"
+            record["sent_at"] = utc_now()
+            _remember_sent_fingerprint(state, record, iid)
             record["last_error"] = None
             record.pop("telegram_next_attempt_at", None)
             record.pop("telegram_first_failed_at", None)
@@ -3679,7 +3844,24 @@ def main():
         print(f"[FATAL] State save failed: {exc}", file=sys.stderr)
         return 1
     elapsed = _time.monotonic() - _START_TIME
-    print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} errors_this_run={run_errors} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
+    for _site in cfg["websites"]:
+        _sid = _site["id"]
+        _result = results.get(_sid, {})
+        _site_state = site_state(state, _sid)
+        print(f"[SITE-SUMMARY] id={_sid} success={bool(_result.get('success'))} candidates={len(_result.get('candidates', []))} partial_errors={len(_result.get('errors', []))} baseline_complete={bool(_site_state.get('baseline_complete'))} consecutive_failures={int(_site_state.get('consecutive_failures', 0) or 0)}")
+    _pending_reasons = Counter()
+    _oldest_pending = None
+    for _record in state.get("items", {}).values():
+        if not isinstance(_record, dict) or _record.get("status") != "pending": continue
+        _reason = clean_text(str(_record.get("last_error") or "no_error_detail"), 80)
+        _pending_reasons[_reason] += 1
+        _stamp = _parse_utc_timestamp(_record.get("first_seen"))
+        if _stamp and (_oldest_pending is None or _stamp < _oldest_pending): _oldest_pending = _stamp
+    if _pending_reasons:
+        print("[PENDING-BREAKDOWN] " + "; ".join(f"{k}={v}" for k, v in _pending_reasons.most_common(8)))
+    if _oldest_pending:
+        print(f"[PENDING-OLDEST] first_seen={_oldest_pending.isoformat()} age_days={(datetime.now(timezone.utc)-_oldest_pending).total_seconds()/86400:.1f}")
+    print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} errors_this_run={run_errors} partial_errors_this_run={partial_errors_this_run} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects_total={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders_total={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
     return 0
 
 
