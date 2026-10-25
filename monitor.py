@@ -1555,7 +1555,6 @@ def get_config():
         site["js_wait_for_selector"] = clean_text(str(raw_selector or ""), 200) or None
         try: site["js_selector_timeout_ms"] = max(1000, min(90000, int(site.get("js_selector_timeout_ms", 10000))))
         except (TypeError, ValueError, OverflowError): site["js_selector_timeout_ms"] = 10000
-        # STEP 1: Per-site max_items_per_site support (VBU uses 200, others default to scan value)
         try: site["max_items_per_site"] = max(1, min(500, int(site.get("max_items_per_site", scan["max_items_per_site"]))))
         except (TypeError, ValueError, OverflowError): site["max_items_per_site"] = scan["max_items_per_site"]
         raw_direct = site.get("direct_urls", [])
@@ -1930,8 +1929,58 @@ def extract_candidates(html_text, page_url, site, scan):
             "is_pdf": is_pdf_link, "score": score + pdf_bonus, "upload_date": upload_dt.isoformat() if upload_dt else None,
         })
 
-    # STEP 1: Date-first sort (newest first), then by score. Fixes VBU issue where old
-    # high-score items were pushing out newer notices due to score-only sort.
+    # =========================================================
+    # VBU-ONLY FIX: Catch JS download buttons (onclick attribute)
+    # that are not normal <a> links. Guarded by site id, so this
+    # block can NEVER affect any other university. Robust title
+    # extraction: heading (h1-h6) → bold (b/strong) → first line
+    # of context. So HTML structure changes don't break it.
+    # =========================================================
+    if site.get("id") == "vbu-hazaribagh":
+        for btn in soup.find_all(attrs={"onclick": True}):
+            onclick_text = btn.get("onclick", "") or ""
+            if ".pdf" not in onclick_text.lower() and "download" not in onclick_text.lower():
+                continue
+            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", onclick_text, re.I)
+            if not match:
+                continue
+            pdf_url = _canonical_spa_url(urljoin(page_url, match.group(1)))
+            if not is_http_url(pdf_url) or not same_host(page_url, pdf_url) or pdf_url in seen:
+                continue
+            parent = btn.find_parent(["div", "tr", "li"], class_=re.compile(r"card|notice|item|list|row", re.I)) or btn.parent
+            if not parent:
+                continue
+            title = ""
+            for tag in ["h6", "h5", "h4", "h3", "h2", "h1"]:
+                h_tag = parent.find(tag)
+                if h_tag:
+                    candidate_title = clean_text(h_tag.get_text(" ", strip=True), 300)
+                    if candidate_title and not _is_generic_title(candidate_title):
+                        title = candidate_title
+                        break
+            if not title:
+                b_tag = parent.find(["b", "strong"])
+                if b_tag:
+                    candidate_title = clean_text(b_tag.get_text(" ", strip=True), 300)
+                    if candidate_title and not _is_generic_title(candidate_title):
+                        title = candidate_title
+            if not title:
+                context_text = clean_text(parent.get_text(" ", strip=True), 700)
+                if context_text:
+                    candidate_title = clean_text(context_text.split('\n')[0], 300)
+                    if candidate_title and not _is_generic_title(candidate_title):
+                        title = candidate_title
+            if not title or len(title) < 10 or _is_generic_title(title):
+                continue
+            context = clean_text(parent.get_text(" ", strip=True), 700)
+            upload_dt_vbu = _extract_upload_date(btn)
+            seen.add(pdf_url)
+            out.append({
+                "url": pdf_url, "title": title, "context": context, "source_page": page_url,
+                "is_pdf": True, "score": 10, "upload_date": upload_dt_vbu.isoformat() if upload_dt_vbu else None,
+            })
+    # =========================================================
+
     def _sort_key(item):
         dt_str = item.get("upload_date")
         if dt_str:
@@ -2169,7 +2218,6 @@ def discover_site(session, site, scan):
                     if len(queue) >= total_budget * 2: break
         except Exception as exc: errors.append(f"{page}: {clean_text(str(exc), 250)}")
 
-    # STEP 1: Final list also date-first sorted (newest first), then score. Uses per-site limit.
     values = list(candidates.values())
     def _final_sort_key(item):
         dt_str = item.get("upload_date")
