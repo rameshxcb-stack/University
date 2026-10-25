@@ -1,19 +1,17 @@
 name: Jharkhand University Notification Monitor
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'      # Every 6 hours (adjust as needed)
-  workflow_dispatch:
+  workflow_dispatch: # External Cron isse trigger karega
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 120        # ← SAFETY NET: kill job after 2 hours
+    timeout-minutes: 90        # Safety net (agar run atak jaye toh 90 min mein kill)
 
     steps:
       - uses: actions/checkout@v4
 
-      # ---------- CACHE: pip (huge speedup for PaddleOCR) ----------
+      # ---------- CACHE: pip ----------
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
@@ -30,15 +28,6 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
-
-      # ---------- CACHE: PaddleOCR model weights ----------
-      - name: Cache PaddleOCR models
-        uses: actions/cache@v4
-        with:
-          path: ~/.paddleocr
-          key: ${{ runner.os }}-paddleocr-models-v1
-          restore-keys: |
-            ${{ runner.os }}-paddleocr-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -57,24 +46,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-hin
 
-      - name: Verify OCR engines
-        run: |
-          python -c "
-          import sys
-          try:
-              from paddleocr import PaddleOCR
-              print('[OK] PaddleOCR available')
-          except ImportError as e:
-              print(f'[FAIL] PaddleOCR missing: {e}'); sys.exit(1)
-          import pytesseract
-          print('[OK] Tesseract available')
-          try:
-              from rapidocr_onnxruntime import RapidOCR
-              print('[OK] RapidOCR available')
-          except ImportError:
-              print('[WARN] RapidOCR missing (non-fatal)')
-          "
-
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -82,10 +53,10 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           OCR_DPI: "250"
           OCR_ENABLED: "true"
-          PADDLEOCR_ENABLED: "true"
+          PADDLEOCR_ENABLED: "false" # Code mein already disabled hai
           TESSERACT_ENABLED: "true"
-          MAX_RUN_SECONDS: "5400"        # 90 min
-          SEND_RESERVE_SECONDS: "900"    # reserve 15 min for sending
+          MAX_RUN_SECONDS: "4800"        # 80 minutes max run time
+          SEND_RESERVE_SECONDS: "600"    # reserve 10 min for sending
         run: python monitor.py
 
       - name: Upload state
