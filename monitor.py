@@ -40,12 +40,8 @@ fitz = _try_import("pymupdf", "fitz")
 _rapidocr_mod = _try_import("rapidocr_onnxruntime", "rapidocr")
 RapidOCR = getattr(_rapidocr_mod, "RapidOCR", None) if _rapidocr_mod is not None else None
 _RAPIDOCR_AVAILABLE = RapidOCR is not None
-try:
-    from paddleocr import PaddleOCR
-    _PADDLEOCR_AVAILABLE = True
-except ImportError:
-    PaddleOCR = None
-    _PADDLEOCR_AVAILABLE = False
+# PaddleOCR intentionally disabled: native Paddle inference crashed the GitHub runner (SIGSEGV).
+_PADDLEOCR_AVAILABLE = False
 pytesseract = _try_import("pytesseract")
 _PIL_Image = _try_import("PIL.Image")
 _TESSERACT_AVAILABLE = pytesseract is not None and _PIL_Image is not None
@@ -90,7 +86,7 @@ MAX_PDF_OCR_SECONDS = int(os.getenv("MAX_PDF_OCR_SECONDS", "120"))
 TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").strip().lower() == "true"
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "hin+eng").strip() or "hin+eng"
 TESSERACT_PSM = os.getenv("TESSERACT_PSM", "6").strip()
-PADDLEOCR_ENABLED = os.getenv("PADDLEOCR_ENABLED", "true").strip().lower() == "true"
+PADDLEOCR_ENABLED = False  # deliberately disabled; use RapidOCR then Tesseract
 GEMINI_PDF_OCR_ENABLED = os.getenv("GEMINI_PDF_OCR_ENABLED", "true").strip().lower() == "true"
 SEND_PDF_ENABLED = os.getenv("SEND_PDF_ENABLED", "true").strip().lower() == "true"
 
@@ -98,7 +94,7 @@ JS_RENDER_ENABLED = os.getenv("JS_RENDER_ENABLED", "true").strip().lower() == "t
 JS_RENDER_TIMEOUT_MS = int(os.getenv("JS_RENDER_TIMEOUT_MS", "25000"))
 JS_WAIT_UNTIL = os.getenv("JS_WAIT_UNTIL", "domcontentloaded").strip() or "domcontentloaded"
 JS_THIN_TEXT_THRESHOLD = int(os.getenv("JS_THIN_TEXT_THRESHOLD", "200"))
-JS_MAX_RENDER_PER_SITE = int(os.getenv("JS_MAX_RENDER_PER_SITE", "40"))
+JS_MAX_RENDER_PER_SITE = max(1, min(100, int(os.getenv("JS_MAX_RENDER_PER_SITE", "60"))))
 JS_WAIT_AFTER_MS = max(0, min(60000, int(os.getenv("JS_WAIT_AFTER_MS", "2500"))))
 JS_SCROLL_TO_BOTTOM = os.getenv("JS_SCROLL_TO_BOTTOM", "false").strip().lower() == "true"
 JS_WAIT_FOR_SELECTOR_DEFAULT = os.getenv("JS_WAIT_FOR_SELECTOR_DEFAULT", "").strip()
@@ -133,7 +129,6 @@ _DYNAMIC_MODELS: List[str] = []
 _DEAD_MODELS: set = set()
 _GEMINI_QUOTA_EXHAUSTED: bool = False
 _RAPIDOCR_INSTANCE = None
-_PADDLEOCR_INSTANCE = None
 _OCR_INIT_LOCK = threading.Lock()
 _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
@@ -307,29 +302,12 @@ def _is_notice_document_url(url):
 
 
 def _looks_like_menu_dump(title):
-    """Detect navigation/footer text masquerading as a notice title."""
     if not title: return False
-    text = re.sub(r"\s+", " ", str(title)).strip().casefold()
-    words = text.split()
+    words = title.split()
     if len(words) < 4: return False
-
-    # Keep these phrases specific to common site navigation; do not reject a
-    # genuine title just because it contains one generic word such as admission.
-    nav_phrases = (
-        "about us", "an introduction", "director administration",
-        "university vice-chancellor", "vice chancellor", "vice-chancellor",
-        "citizen charter", "citizen's charter", "how to reach", "contact us",
-        "academics departments", "departments faculty", "admission info",
-        "multidisciplinary", "skip to content", "site map", "sitemap",
-        "right to information", "about university", "vision mission",
-        "director's desk", "vc's desk", "administration academics",
-    )
-    phrase_hits = sum(1 for phrase in nav_phrases if phrase in text)
-    first_words = " ".join(words[:16])
-    early_hits = sum(1 for sig in _STRICT_EARLY_NAV_SIGNALS if _match_signal(first_words, sig))
-    # Menu dumps usually contain a chain of unrelated navigation labels.
-    # A long title with multiple specific menu phrases is not a useful notice.
-    return phrase_hits >= 2 or (phrase_hits >= 1 and early_hits >= 2) or early_hits >= 4
+    first_words = " ".join(words[:8]).lower()
+    count = sum(1 for sig in _STRICT_EARLY_NAV_SIGNALS if _match_signal(first_words, sig))
+    return count >= 2
 
 
 def _is_garbage_title(title):
@@ -417,11 +395,8 @@ def _resolve_title(item):
         if not (context.startswith("http://") or context.startswith("https://")):
             return context[:200]
     slug = _title_from_url(url, min_len=5)
-    if slug and not _is_generic_title(slug) and not _looks_like_menu_dump(slug): return slug
-    filename_title = _filename_to_title(url) if _is_notice_document_url(url) else ""
-    if filename_title and not _is_generic_title(filename_title): return filename_title
-    # Never disguise a missing/garbled title as a verified plain "Notice".
-    return "Official notice (title needs verification)"
+    if slug: return slug
+    return "Notice"
 
 
 def _get_rapidocr():
@@ -443,68 +418,7 @@ def _get_rapidocr():
     return _RAPIDOCR_INSTANCE
 
 
-def _get_paddleocr():
-    global _PADDLEOCR_INSTANCE
-    if _PADDLEOCR_INSTANCE is None and _PADDLEOCR_AVAILABLE:
-        with _OCR_INIT_LOCK:
-            if _PADDLEOCR_INSTANCE is not None: return _PADDLEOCR_INSTANCE
-            try:
-                _PADDLEOCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="hi", show_log=False, use_gpu=False)
-                print("[INFO] PaddleOCR (Devanagari) initialized.", file=sys.stderr)
-            except Exception as exc:
-                print(f"[WARN] PaddleOCR init failed: {exc}", file=sys.stderr)
-                return None
-    return _PADDLEOCR_INSTANCE
-
-
-def _extract_pdf_text_paddleocr(content):
-    if not PADDLEOCR_ENABLED or not _PADDLEOCR_AVAILABLE: return ""
-    ocr = _get_paddleocr()
-    if ocr is None: return ""
-    parts = []
-    try:
-        import numpy as np
-        try:
-            import cv2
-            has_cv2 = True
-        except ImportError:
-            has_cv2 = False
-        doc = fitz.open(stream=content, filetype="pdf")
-        pages_to_process = min(len(doc), MAX_PDF_PAGES, _OCR_MAX_PAGES)
-        for page_num in range(pages_to_process):
-            try:
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap(dpi=OCR_DPI)
-                img_bytes = pix.tobytes("png")
-                if has_cv2:
-                    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-                else:
-                    from PIL import Image
-                    img = np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
-                    img = img[:, :, ::-1]
-                result = ocr.ocr(img, cls=True)
-                if result and result[0]:
-                    for line in result[0]:
-                        try: parts.append(line[1][0])
-                        except (IndexError, TypeError): continue
-            except Exception as exc:
-                print(f"[WARN] PaddleOCR page {page_num+1} failed: {exc}", file=sys.stderr)
-        doc.close()
-    except Exception as exc:
-        print(f"[WARN] PaddleOCR PDF processing failed: {exc}", file=sys.stderr)
-    return "\n\n".join(parts)
-
-
-def _cache_put(url, content):
-    with _RUNTIME_PDF_CACHE_LOCK:
-        if url in _RUNTIME_PDF_CACHE: return
-        if len(_RUNTIME_PDF_CACHE) >= _RUNTIME_PDF_CACHE_MAX_ITEMS:
-            try:
-                first_key = next(iter(_RUNTIME_PDF_CACHE))
-                del _RUNTIME_PDF_CACHE[first_key]
-            except (StopIteration, KeyError): pass
-        _RUNTIME_PDF_CACHE[url] = content
-
+# PaddleOCR code removed intentionally to prevent native SIGSEGV crashes.
 
 def _get_ocr_cache(content_hash):
     with _OCR_CONTENT_LOCK:
@@ -837,7 +751,7 @@ _NON_NOTICE_URL_PATTERNS = [
     re.compile(r"/notice-category(/|$)", re.I), re.compile(r"/document-category(/|$)", re.I), re.compile(r"/document_category(/|$)", re.I),
     re.compile(r"/past-notices(/|$)", re.I), re.compile(r"/past_notices(/|$)", re.I), re.compile(r"/whats-new(/|$)", re.I),
     re.compile(r"/whats_new(/|$)", re.I), re.compile(r"/category/[^/]+/?$", re.I), re.compile(r"/tag/[^/]+/?$", re.I),
-    re.compile(r"/archive/?$", re.I), re.compile(r"/notice/listing/?$", re.I), re.compile(r"/directory/?$", re.I), re.compile(r"/about-district/?$", re.I),
+    re.compile(r"/archive/?$", re.I), re.compile(r"/directory/?$", re.I), re.compile(r"/about-district/?$", re.I),
     re.compile(r"/department/?$", re.I), re.compile(r"/search(/|$)", re.I), re.compile(r"[?&]page=\d+", re.I),
     re.compile(r"[?&]paged=\d+", re.I), re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)(/|$).*(past[-_]?notices|whats[-_]?new|archive|category|notice[-_]?category|document[-_]?category|search)", re.I),
     re.compile(r"/(hi|en|hn|ur|bn|ta|te|mr|gu|kn|ml|pa|or|as)/?$", re.I),
@@ -851,7 +765,7 @@ _ARCHIVE_URL_PATTERNS = [
     re.compile(r"/page/\d+/?$", re.I), re.compile(r"/page/?$", re.I), re.compile(r"[?&]page=\d+", re.I), re.compile(r"[?&]paged=\d+", re.I),
 ]
 _GENERIC_TITLES = {
-    "archive", "listing", "listing page", "सूचना", "notice", "more", "more...", "more…", "more....", "»", "«", ">>", "<<", "next", "previous", "prev",
+    "archive", "more", "more...", "more…", "more....", "»", "«", ">>", "<<", "next", "previous", "prev",
     "back", "forward", "home", "contact", "about", "about us", "contact us", "read more", "view more",
     "view all", "show more", "see more", "load more", "learn more", "continue reading", "read more chevron_right", "view all chevron_right",
     "chevron_right", "chevron_left", "arrow_forward", "arrow_back", "click here", "here", "link",
@@ -1236,7 +1150,7 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
     title_context = f"{normalized_title} {normalized_context}".casefold()
     amendment_signal = bool(re.search(r"corrigendum|revised|revision|amended|amendment|extension|extended|last date|deadline|date extended|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अंतिम तिथि बढ़ी|अवधि बढ़ाई", title_context, re.I))
     notice_signal = any(_match_signal(title_context, sig) for sig in _NOTICE_SIGNALS)
-    if not strict_pdf_date and amendment_signal and notice_signal:
+    if amendment_signal and notice_signal:
         return False
     active_signal = bool(re.search(r"admission|application|recruitment|vacancy|counselling|counseling|registration|scholarship|प्रवेश|आवेदन|भर्ती|रिक्ति|काउंसलिंग|पंजीकरण|छात्रवृत्ति", title_context, re.I))
     if active_signal:
@@ -1473,6 +1387,8 @@ def get_config():
     scan["baseline_retention_days"] = max(7, int(scan["baseline_retention_days"]))
     scan["domain_delay_seconds"] = max(0.0, min(10.0, float(scan["domain_delay_seconds"])))
     scan["max_state_items"] = max(500, min(10000, int(scan["max_state_items"])))
+    scan["max_sent_fingerprints"] = max(1000, min(50000, int(scan.get("max_sent_fingerprints", 12000))))
+    scan["max_html_fingerprints"] = max(1000, min(30000, int(scan.get("max_html_fingerprints", 8000))))
     scan["max_state_bytes"] = max(500000, min(10000000, int(scan["max_state_bytes"])))
     scan["max_pending_attempts"] = max(500, int(scan["max_pending_attempts"]))
     scan["stale_notice_days"] = max(1, int(scan["stale_notice_days"]))
@@ -1543,7 +1459,7 @@ def get_config():
 
 
 def default_state():
-    return {"version": 32, "initialized": False, "last_run": None, "items": {}, "sent_fingerprints": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
+    return {"version": 33, "initialized": False, "last_run": None, "items": {}, "sent_fingerprints": {}, "html_fingerprints": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
 
 
 def load_state():
@@ -1554,6 +1470,7 @@ def load_state():
     state.setdefault("last_run", None)
     state.setdefault("items", {})
     state.setdefault("sent_fingerprints", {})
+    state.setdefault("html_fingerprints", {})
     state.setdefault("sites", {})
     state.setdefault("review_queue", {})
     state.setdefault("metrics", {})
@@ -1572,11 +1489,12 @@ def load_state():
         record["_loaded_status"] = record.get("status")
         record.setdefault("attempts", 0); record.setdefault("last_error", None); record.setdefault("summary", ""); record.setdefault("classification", None); record.setdefault("pdf_extracted", False); record.setdefault("pdf_text", ""); record.setdefault("pdf_attempts", 0); record.setdefault("ocr_used", False); record.setdefault("pdf_method", ""); record.setdefault("telegram_attempts", 0); record.setdefault("pdf_sent", False); record.setdefault("upload_date", None); record.setdefault("explicit_title", ""); record.setdefault("first_seen", utc_now()); record.setdefault("last_seen", record["first_seen"]); record.setdefault("etag", None); record.setdefault("last_modified", None); record.setdefault("pdf_hash", None); record.setdefault("pdf_hash_kind", None); record.setdefault("last_content_check_at", None)
         if not record.get("last_content_check_at"): record["last_content_check_at"] = (record.get("last_seen") or record.get("first_seen") or utc_now())
-    # Rebuild compact global sent fingerprints from retained sent records (migration-safe).
+    # Migration-safe: rebuild both compact indexes from retained sent records.
+    # Existing indexes are preserved, so previously pruned records remain deduplicated.
     for iid, record in state["items"].items():
         if isinstance(record, dict) and record.get("status") == "sent":
             _remember_sent_fingerprint(state, record, iid)
-    state["version"] = 32
+    state["version"] = 33
     return state
 
 
@@ -1675,6 +1593,10 @@ def _matched_excluded_title_signal(title, signals=None):
 
 
 def _keyword_pre_classify(record, excluded_signals=None):
+    # VBU DEBUG (diagnostic only — safe to remove after Run #41)
+    if record.get("site_id") == "vbu-hazaribagh":
+        print(f"[VBU-DEBUG] title={record.get('title','')[:90]!r} | is_pdf={record.get('is_pdf')} | status={record.get('status')} | url={record.get('url','')[:100]}", file=sys.stderr)
+
     # PDFs skip title heuristics — Gemini reads PDF content to classify
     if record.get("is_pdf", False):
         if _is_stale_notice(
@@ -1794,51 +1716,77 @@ def find_fuzzy_match(site_items, title, url):
 
 
 def _remember_sent_fingerprint(state, record, iid=None):
-    """Keep compact exact fingerprints independently of the bounded item history."""
-    if not isinstance(record, dict): return
+    """Persist compact PDF and HTML fingerprints outside the prunable item history."""
+    if not isinstance(record, dict):
+        return
+    item_id = str(iid or record.get("_item_id") or "")[:100]
+    stamp = record.get("sent_at") or record.get("terminal_at") or record.get("first_seen") or utc_now()
+    title = clean_text(str(record.get("title") or ""), 120)
+    site_id = clean_text(str(record.get("site_id") or ""), 60)
+
+    # Keep PDF/content hashes in their own index, independent of full state.items.
     kind = record.get("pdf_hash_kind")
     fingerprint = record.get("pdf_hash")
-    if not fingerprint or not kind: return
-    index = state.setdefault("sent_fingerprints", {})
-    key = f"{kind}:{fingerprint}"
-    item_id = str(iid or record.get("_item_id") or "")[:100]
-    existing = index.get(key) if isinstance(index.get(key), dict) else {}
-    existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
-    stamp = record.get("sent_at") or record.get("terminal_at") or existing_date or record.get("first_seen") or utc_now()
-    index[key] = {
-        "t": clean_text(str(record.get("title") or ""), 120),
-        "s": clean_text(str(record.get("site_id") or ""), 60),
-        "d": str(stamp)[:40],
-        "i": item_id,
-    }
+    if fingerprint and kind:
+        index = state.setdefault("sent_fingerprints", {})
+        key = f"{kind}:{fingerprint}"
+        existing = index.get(key) if isinstance(index.get(key), dict) else {}
+        existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
+        index[key] = {"t": title, "s": site_id, "d": str(existing_date or stamp)[:40], "i": item_id}
+
+    # HTML notices do not always have downloadable PDFs. Keep an independent exact
+    # title+context fingerprint so pruning old full records does not re-send them.
+    html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
+    if html_hash:
+        html_index = state.setdefault("html_fingerprints", {})
+        existing = html_index.get(html_hash) if isinstance(html_index.get(html_hash), dict) else {}
+        existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
+        html_index[html_hash] = {
+            "t": title,
+            "s": site_id,
+            "d": str(existing_date or stamp)[:40],
+            "i": item_id,
+        }
 
 
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     if not new_hash or not new_kind:
-        html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
-        if not html_hash: return None
-        new_hash, new_kind = html_hash, "html-v1"
+        new_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
+        new_kind = "html-v1"
+    if not new_hash:
+        return None
     new_title_norm = _normalize_title(record.get("title", ""))
 
-    # Exact PDF fingerprints are global across universities and do not require title equality.
+    # PDF fingerprints are global across universities and survive item pruning.
     if new_kind != "html-v1":
         indexed = state.get("sent_fingerprints", {}).get(f"{new_kind}:{new_hash}")
         if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
             return indexed.get("t") or "previously sent identical PDF"
+    else:
+        # HTML hash includes normalized title and context. Require a plausible title
+        # match as a guard against corrupt/legacy index entries.
+        indexed = state.get("html_fingerprints", {}).get(new_hash)
+        if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
+            indexed_title = _normalize_title(indexed.get("t", ""))
+            if new_title_norm and indexed_title and fuzz.token_sort_ratio(new_title_norm, indexed_title) >= 85:
+                return indexed.get("t") or "previously sent identical HTML notice"
 
+    # Compatibility fallback for older state.json records and fuzzy legacy matches.
     for other_iid, other in state.get("items", {}).items():
-        if other_iid == exclude_iid or not isinstance(other, dict): continue
-        if other.get("status") != "sent": continue
-        other_hash = None
+        if other_iid == exclude_iid or not isinstance(other, dict):
+            continue
+        if other.get("status") != "sent":
+            continue
         if new_kind == "html-v1":
             other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
         else:
-            if other.get("pdf_hash_kind") != new_kind: continue
+            if other.get("pdf_hash_kind") != new_kind:
+                continue
             other_hash = other.get("pdf_hash")
-        if not other_hash or other_hash != new_hash: continue
-        # HTML title/context fingerprints are less reliable than byte/content PDF hashes.
+        if not other_hash or other_hash != new_hash:
+            continue
         if new_kind == "html-v1":
             other_title_norm = _normalize_title(other.get("title", ""))
             if not new_title_norm or not other_title_norm or fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 85:
@@ -1866,22 +1814,6 @@ def extract_candidates(html_text, page_url, site, scan):
         if _is_navigation_url(href): continue
 
         title = clean_text(a.get_text(" ", strip=True), 300)
-        # A link back to the site's own homepage is never a notice by itself.
-        # This prevents a navigation block being emitted as "Notice".
-        try:
-            href_parsed = urlparse(href)
-            page_parsed = urlparse(page_url)
-            href_is_home = (
-                href_parsed.scheme.lower() == page_parsed.scheme.lower()
-                and href_parsed.netloc.lower() == page_parsed.netloc.lower()
-                and (href_parsed.path or "/").rstrip("/") == ""
-                and not href_parsed.query
-                and not href_parsed.fragment
-            )
-        except Exception:
-            href_is_home = False
-        if href_is_home:
-            continue
         parent = a.find_parent("tr")
         if parent is None: parent = a.find_parent(["li", "article", "section"])
         if parent is None: parent = a.find_parent(["div", "td"])
@@ -1943,19 +1875,6 @@ def extract_candidates(html_text, page_url, site, scan):
                     title = p
                     break
 
-        if _looks_like_menu_dump(title):
-            repaired = _cleanup_menu_dump_title(title, url=href, explicit="")
-            if repaired and repaired != title and not _looks_like_menu_dump(repaired) and not _is_generic_title(repaired):
-                title = repaired
-            elif not _is_notice_document_url(href) and not _is_archive_url(href):
-                print(f"[MENU-DUMP-SKIP] Navigation text rejected as notice title: {title[:90]!r} ({href[:100]})", file=sys.stderr)
-                continue
-
-        if _looks_like_menu_dump(context) and (_is_generic_title(title) or len(title.split()) < 3):
-            if not _is_notice_document_url(href) and not _is_archive_url(href):
-                print(f"[MENU-CONTEXT-SKIP] Navigation-heavy context rejected: {href[:100]}", file=sys.stderr)
-                continue
-
         score = local_score(title, href, context, keywords)
         href_lower = href.lower()
         is_pdf_link = bool(is_pdf(href) or _looks_like_pdf_url(href))
@@ -1971,21 +1890,54 @@ def extract_candidates(html_text, page_url, site, scan):
         upload_dt = _extract_upload_date(a)
 
         final_title = clean_text(title, 300)
-        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
-            final_title = clean_text(context, 180)
-        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
-            final_title = _title_from_url(href, min_len=5)
-        if not final_title or _is_generic_title(final_title) or _looks_like_menu_dump(final_title):
-            # Do not send navigation text under the misleading generic title "Notice".
-            # Keep genuine document links; their filename hash is a last-resort label.
-            if is_pdf_link or _is_notice_document_url(href):
-                final_title = _filename_to_title(href) or f"Official document ({hashlib.sha256(href.encode()).hexdigest()[:8]})"
-            else:
-                continue
+        if not final_title or _is_generic_title(final_title): final_title = clean_text(context, 180)
+        if not final_title or _is_generic_title(final_title): final_title = _title_from_url(href, min_len=5)
+        if not final_title: final_title = "Notice"
 
         out.append({
             "url": href, "title": final_title, "context": context, "source_page": page_url,
             "is_pdf": is_pdf_link, "score": score + pdf_bonus, "upload_date": upload_dt.isoformat() if upload_dt else None,
+        })
+
+    # Some universities publish notices as image files (JPG/PNG/WebP) embedded
+    # directly in a notice page rather than as PDF links. Capture those image URLs
+    # when their filename, alt text, or surrounding caption indicates a real notice.
+    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")
+    asset_noise = re.compile(r"(?:logo|favicon|sprite|icon|avatar|banner|slider|carousel|social|facebook|twitter|whatsapp|captcha|payment|seal|emblem)", re.I)
+    for img in soup.find_all("img", src=True):
+        raw_src = (img.get("src") or "").strip()
+        if not raw_src or raw_src.startswith(("data:", "blob:", "javascript:")):
+            continue
+        image_url = canonical_url(urljoin(page_url, raw_src))
+        image_path = unquote(urlparse(image_url).path or "").lower()
+        if not is_http_url(image_url) or not same_host(page_url, image_url):
+            continue
+        if not image_path.endswith(image_exts) or image_url in seen:
+            continue
+        alt = clean_text(img.get("alt", ""), 250)
+        img_title = clean_text(img.get("title", ""), 250)
+        parent = img.find_parent(["tr", "li", "article", "section", "div", "td"]) or img.parent
+        context = clean_text(parent.get_text(" ", strip=True) if parent else "", 700)
+        signal_text = f"{alt} {img_title} {context} {image_path}".lower()
+        if asset_noise.search(image_path) and not any(kw in signal_text for kw in keywords):
+            continue
+        if not any(kw in signal_text for kw in keywords):
+            continue
+        title = alt if alt and not _is_generic_title(alt) else img_title
+        if not title or _is_generic_title(title) or len(title) < 5:
+            title = context
+        if not title or _is_generic_title(title) or len(title) < 8:
+            title = _filename_to_title(image_url)
+        if not title or _is_generic_title(title) or len(title) < 5:
+            continue
+        if _looks_like_menu_dump(title) or _is_garbage_title(title):
+            continue
+        score = max(1, local_score(title, image_url, context, keywords))
+        seen.add(image_url)
+        out.append({
+            "url": image_url, "title": clean_text(title, 300), "context": context,
+            "source_page": page_url, "is_pdf": False, "is_image": True,
+            "score": score, "upload_date": None,
         })
 
     if site.get("id") == "vbu-hazaribagh":
@@ -2250,32 +2202,6 @@ def discover_site(session, site, scan):
             successful_pages += 1
 
             soup = BeautifulSoup(response_text, "html.parser")
-
-            # Many institutional homepages expose notices/recruitment/results
-            # inside same-site iframes. Scan those documents as pages instead
-            # of treating the parent homepage navigation as a notice.
-            for frame in soup.find_all(["iframe", "frame"], src=True):
-                frame_src = _canonical_spa_url(urljoin(final_url, frame.get("src", "").strip()))
-                if not is_http_url(frame_src) or not same_host(base_url, frame_src):
-                    continue
-                if frame_src in visited or frame_src in queue or _is_navigation_url(frame_src):
-                    continue
-                frame_label = clean_text(" ".join([
-                    frame.get("title", ""), frame.get("name", ""),
-                    frame.get("id", ""), frame.get("class", [""])[0] if frame.get("class") else ""
-                ]), 200).casefold()
-                frame_haystack = (frame_src + " " + frame_label).casefold()
-                # Include named notice feeds and iframes that look like data tables;
-                # avoid generic external widgets and maps.
-                iframe_signals = (
-                    "notice", "notification", "order", "recruit", "result", "tender",
-                    "academic", "exam", "announcement", "circular", "latest", "update",
-                    "vacancy", "career", "download", "iframe", "info-desk"
-                )
-                if any(sig in frame_haystack for sig in iframe_signals):
-                    queue.insert(0, frame_src)
-                    print(f"[IFRAME-DISCOVERY] {site['id']}: {frame_src[:140]}", file=sys.stderr)
-
             for a in soup.find_all("a", href=True):
                 href = _canonical_spa_url(urljoin(final_url, a.get("href", "")))
                 if (not is_http_url(href) or not same_host(base_url, href) or href in visited or href in queue): continue
@@ -2554,13 +2480,13 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- GEMINI OCR ---\n\n{gemini_text}" if raw_text.strip() else gemini_text
                 extraction_method = "gemini"
                 print(f"[INFO] Gemini OCR succeeded ({len(gemini_text)} chars)", file=sys.stderr)
-        if extraction_method == "plumber" and PADDLEOCR_ENABLED and _PADDLEOCR_AVAILABLE and not _ocr_deadline_hit():
-            print("[OCR] Trying PaddleOCR (Devanagari)...", file=sys.stderr)
-            paddle_text = _extract_pdf_text_paddleocr(content)
-            if paddle_text and not _text_looks_garbage(paddle_text) and len(paddle_text.strip()) > len(raw_text.strip()):
-                raw_text = f"{raw_text}\n\n--- PADDLEOCR ---\n\n{paddle_text}" if raw_text.strip() else paddle_text
-                extraction_method = "paddleocr"
-                print(f"[INFO] PaddleOCR succeeded ({len(paddle_text)} chars)", file=sys.stderr)
+        if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE and not _ocr_deadline_hit():
+            print("[OCR] Trying RapidOCR (Devanagari)...", file=sys.stderr)
+            rocr_text = _extract_pdf_text_rapidocr(content)
+            if rocr_text and not _text_looks_garbage(rocr_text) and len(rocr_text.strip()) > len(raw_text.strip()):
+                raw_text = f"{raw_text}\n\n--- RAPIDOCR ---\n\n{rocr_text}" if raw_text.strip() else rocr_text
+                extraction_method = "rapidocr"
+                print(f"[INFO] RapidOCR succeeded ({len(rocr_text)} chars)", file=sys.stderr)
         if extraction_method == "plumber" and TESSERACT_ENABLED and _TESSERACT_AVAILABLE and not _ocr_deadline_hit():
             print("[OCR] Trying Tesseract...", file=sys.stderr)
             tess_text = _extract_pdf_text_tesseract(content)
@@ -2568,13 +2494,6 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
                 raw_text = f"{raw_text}\n\n--- TESSERACT ---\n\n{tess_text}" if raw_text.strip() else tess_text
                 extraction_method = "tesseract"
                 print(f"[INFO] Tesseract succeeded ({len(tess_text)} chars)", file=sys.stderr)
-        if extraction_method == "plumber" and OCR_ENABLED and _RAPIDOCR_AVAILABLE and not _ocr_deadline_hit():
-            print("[OCR] Trying RapidOCR...", file=sys.stderr)
-            rocr_text = _extract_pdf_text_rapidocr(content)
-            if rocr_text and not _text_looks_garbage(rocr_text) and len(rocr_text.strip()) > len(raw_text.strip()):
-                raw_text = f"{raw_text}\n\n--- RAPIDOCR ---\n\n{rocr_text}" if raw_text.strip() else rocr_text
-                extraction_method = "rapidocr"
-                print(f"[INFO] RapidOCR succeeded ({len(rocr_text)} chars)", file=sys.stderr)
     cleaned = clean_text(raw_text, MAX_PDF_TEXT_CHARS)
     raw_for_title = raw_text[:MAX_PDF_RAW_TEXT_CHARS]
     if cleaned and len(cleaned) >= 20:
@@ -3107,8 +3026,6 @@ _FORMATTERS = {"admission": _format_admission, "result": _format_result, "admit_
 def format_message(site, item, classification=None):
     classification = classification or {}
     raw_title = _resolve_title(item)
-    if _looks_like_menu_dump(raw_title) or _is_garbage_title(raw_title):
-        raw_title = _filename_to_title(item.get("url", "")) or "Official notice (title needs verification)"
     title_hi = _safe_str(classification.get("title_hi"), 200)
     title_is_hindi = _is_devanagari(raw_title)
     site_name = html.escape(site["name"])
@@ -3121,9 +3038,8 @@ def format_message(site, item, classification=None):
     emoji = CATEGORY_EMOJI.get(category, "📌")
     ocr_method = item.get("pdf_method", "")
     if ocr_method == "gemini": ocr_marker = " 🔍G"
-    elif ocr_method == "paddleocr": ocr_marker = " 🔍P"
-    elif ocr_method == "rapidocr": ocr_marker = " 🔍R"
-    elif ocr_method == "tesseract": ocr_marker = " 🔍T"
+    elif str(ocr_method).startswith("rapidocr"): ocr_marker = " 🔍R"
+    elif str(ocr_method).startswith("tesseract"): ocr_marker = " 🔍T"
     elif ocr_method == "cache": ocr_marker = " 🔍C"
     else: ocr_marker = ""
     pdf_marker = " 📄" if item.get("is_pdf") else ""
@@ -3154,7 +3070,7 @@ def truncate_telegram(text, limit=TELEGRAM_SAFE_LIMIT):
     return truncated.rstrip() + "\n\n<i>…(truncated)</i>"
 
 
-def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000, sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60):
+def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000, sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60, max_sent_fingerprints=12000, max_html_fingerprints=8000):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=retention_days)
     items = state.setdefault("items", {})
@@ -3224,17 +3140,36 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
                 for _, key in sorted(active_rows):
                     if len(items) <= max_items: break
                     items.pop(key, None)
-    # Compact sent fingerprints survive eviction of full item records, preventing repeat sends.
-    fingerprints = state.setdefault("sent_fingerprints", {})
+    # Compact indexes are pruned independently from state.items. Their own caps
+    # prevent max_state_items from silently shortening deduplication history.
     fingerprint_cutoff = now - timedelta(days=max(7, int(sent_retention_days)))
+    fingerprints = state.setdefault("sent_fingerprints", {})
     for key, entry in list(fingerprints.items()):
         if not isinstance(entry, dict):
-            fingerprints.pop(key, None); continue
+            fingerprints.pop(key, None)
+            continue
         stamp = _parse_utc_timestamp(entry.get("d"))
-        if stamp and stamp < fingerprint_cutoff: fingerprints.pop(key, None)
-    if len(fingerprints) > max_items:
-        ordered_fingerprints = sorted(fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
-        for key, _ in ordered_fingerprints[:len(fingerprints) - max_items]: fingerprints.pop(key, None)
+        if stamp and stamp < fingerprint_cutoff:
+            fingerprints.pop(key, None)
+    sent_cap = max(1000, int(max_sent_fingerprints))
+    if len(fingerprints) > sent_cap:
+        ordered = sorted(fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
+        for key, _ in ordered[:len(fingerprints) - sent_cap]:
+            fingerprints.pop(key, None)
+
+    html_fingerprints = state.setdefault("html_fingerprints", {})
+    for key, entry in list(html_fingerprints.items()):
+        if not isinstance(entry, dict):
+            html_fingerprints.pop(key, None)
+            continue
+        stamp = _parse_utc_timestamp(entry.get("d"))
+        if stamp and stamp < fingerprint_cutoff:
+            html_fingerprints.pop(key, None)
+    html_cap = max(1000, int(max_html_fingerprints))
+    if len(html_fingerprints) > html_cap:
+        ordered = sorted(html_fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
+        for key, _ in ordered[:len(html_fingerprints) - html_cap]:
+            html_fingerprints.pop(key, None)
 
     def serialized_size():
         try:
@@ -3304,6 +3239,10 @@ def _should_fetch_pdf(record):
     if int(record.get("pdf_attempts", 0)) >= MAX_PDF_ATTEMPTS: return False
     url = record.get("url", "")
     url_lower = url.lower()
+    # Never send direct image URLs through the PDF parser/Gemini PDF path.
+    image_path = urlparse(url).path.lower()
+    if record.get("is_image") or image_path.endswith((".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")):
+        return False
     try:
         parsed = urlparse(url)
         if parsed.path in ("", "/"): return False
@@ -3318,6 +3257,103 @@ def _should_fetch_pdf(record):
     if any(hint in url_lower for hint in ("/downloadfile", "/download_file", "/downloadpdf", "/download_pdf", "/getfile", "/showfile", "/viewfile", "/filedownload", "/writereaddata/", "/uploadfile/", "/storage/notices/", "/storage/notice/", "/documents/notice", "/notice-documents/")): return True
     if record.get("is_pdf", False): return True
     return False
+
+
+def _extract_image_text_rapidocr(image_bytes):
+    """OCR a direct JPG/PNG notice image with RapidOCR; never invokes PaddleOCR."""
+    if not OCR_ENABLED or not _RAPIDOCR_AVAILABLE or not image_bytes:
+        return ""
+    ocr = _get_rapidocr()
+    if ocr is None:
+        return ""
+    try:
+        result, _elapsed = ocr(image_bytes)
+        if not result:
+            return ""
+        lines = [str(row[1]).strip() for row in result if isinstance(row, (list, tuple)) and len(row) > 1 and str(row[1]).strip()]
+        text = "\n".join(lines)
+        return "" if _text_looks_garbage(text) else text
+    except Exception as exc:
+        print(f"[WARN] RapidOCR image failed safely: {exc}", file=sys.stderr)
+        return ""
+
+
+def _extract_image_text_tesseract(image_bytes):
+    """Fallback OCR for direct image notices using installed Tesseract."""
+    if not TESSERACT_ENABLED or not _TESSERACT_AVAILABLE or not image_bytes:
+        return ""
+    try:
+        config = f"--psm {TESSERACT_PSM}" if TESSERACT_PSM else ""
+        with _PIL_Image.open(io.BytesIO(image_bytes)) as img:
+            img.load()
+            text = pytesseract.image_to_string(img.convert("RGB"), lang=TESSERACT_LANG, config=config)
+        text = (text or "").strip()
+        return "" if _text_looks_garbage(text) else text
+    except Exception as exc:
+        print(f"[WARN] Tesseract image failed safely: {exc}", file=sys.stderr)
+        return ""
+
+
+def _fetch_images_for_batch(batch, scan, send_deadline=None):
+    """Fetch and OCR direct image notice candidates; OCR failure never aborts the run."""
+    targets = [(iid, record) for iid, record in batch
+               if record.get("is_image") and not record.get("pdf_text")
+               and int(record.get("pdf_attempts", 0)) < MAX_PDF_ATTEMPTS]
+    if not targets:
+        return
+    default_timeout = scan["request_timeout_seconds"]
+    for iid, record in targets:
+        if send_deadline and time.monotonic() > send_deadline:
+            print("[TIME_LIMIT] Image OCR deferred to next run", file=sys.stderr)
+            break
+        record["pdf_attempts"] = int(record.get("pdf_attempts", 0)) + 1
+        try:
+            timeout = _SITE_TIMEOUT_BY_ID.get(record.get("site_id"), default_timeout)
+            response = make_session().get(record.get("url", ""), timeout=timeout, stream=True,
+                                          verify=_SITE_VERIFY_SSL_BY_ID.get(record.get("site_id"), True))
+            try:
+                if response.status_code != 200:
+                    record["pdf_method"] = f"image_http_{response.status_code}"
+                    print(f"[WARN] Image download HTTP {response.status_code}: {record.get('url','')[:100]}", file=sys.stderr)
+                    continue
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                chunks, total = [], 0
+                for chunk in response.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 12 * 1024 * 1024:
+                        chunks = []
+                        break
+                    chunks.append(chunk)
+                image_bytes = b"".join(chunks)
+                if not image_bytes or total > 12 * 1024 * 1024:
+                    record["pdf_method"] = "image_size_limit"
+                    continue
+                if "image/" not in content_type and not image_bytes.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF8", b"RIFF")):
+                    record["pdf_method"] = "not_image"
+                    continue
+            finally:
+                response.close()
+            text = _extract_image_text_rapidocr(image_bytes)
+            method = "rapidocr_image" if text else ""
+            if not text:
+                print("[OCR] RapidOCR image produced no usable text; trying Tesseract...", file=sys.stderr)
+                text = _extract_image_text_tesseract(image_bytes)
+                if text:
+                    method = "tesseract_image"
+            if text:
+                record["pdf_text"] = clean_text(text, MAX_PDF_TEXT_CHARS)
+                record["pdf_extracted"] = True
+                record["ocr_used"] = True
+                record["pdf_method"] = method
+                print(f"[INFO] {method} succeeded ({len(text)} chars): {record.get('url','')[:80]}", file=sys.stderr)
+            else:
+                record["pdf_method"] = "image_ocr_no_text"
+                print(f"[WARN] No usable text extracted from image: {record.get('url','')[:100]}", file=sys.stderr)
+        except Exception as exc:
+            record["pdf_method"] = "image_ocr_error"
+            print(f"[WARN] Image OCR skipped safely: {exc}", file=sys.stderr)
 
 
 def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
@@ -3458,7 +3494,7 @@ def main():
         print("[FATAL] No Gemini API keys configured. Set GEMINI_API_KEYS or GEMINI_API_KEY.", file=sys.stderr)
         return 2
     print(f"[INFO] Loaded {len(_GEMINI_KEYS_POOL)} unique Gemini API key(s).", file=sys.stderr)
-    print(f"[INFO] OCR engines: Gemini={GEMINI_PDF_OCR_ENABLED}, PaddleOCR={_PADDLEOCR_AVAILABLE}, Tesseract={_TESSERACT_AVAILABLE}, RapidOCR={_RAPIDOCR_AVAILABLE}", file=sys.stderr)
+    print(f"[INFO] OCR engines: Gemini={GEMINI_PDF_OCR_ENABLED}, PaddleOCR=DISABLED, RapidOCR={_RAPIDOCR_AVAILABLE}, Tesseract={_TESSERACT_AVAILABLE}", file=sys.stderr)
     if not cfg["websites"]:
         print("[FATAL] No enabled websites configured.", file=sys.stderr)
         return 2
@@ -3521,11 +3557,11 @@ def main():
         result = results.get(sid, {"candidates": [], "success": False})
         candidates = result["candidates"]
         current_scan_success = bool(result["success"])
-        baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), max(0, int(site.get("baseline_max_errors", scan.get("baseline_max_errors", 3)))))
+        baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), int(site.get("baseline_max_errors", scan.get("baseline_max_errors", 3))))
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
-                state["items"].setdefault(iid, {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None})
+                state["items"].setdefault(iid, {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None})
             ss["baseline_complete"] = True
             ss["baseline_completed_at"] = utc_now()
             ss.pop("baseline_pending_reason", None)
@@ -3555,7 +3591,7 @@ def main():
                         stale_record["summary"] = ""
                         stale_record["last_error"] = f"Stale notice ({reason})"
                 else:
-                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate.get("title", ""), "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale notice ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
+                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate.get("title", ""), "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale notice ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                     site_items_list.append((iid, candidate.get("title", ""), candidate.get("url", "")))
                 print(f"[{reason}] {effective_cand_title[:80]}", file=sys.stderr)
                 continue
@@ -3591,15 +3627,16 @@ def main():
                     if new_context: record["context"] = new_context
                     if candidate.get("upload_date"): record["upload_date"] = candidate["upload_date"]
                     record["is_pdf"] = bool(record.get("is_pdf") or is_pdf_or_notice)
+                    record["is_image"] = bool(candidate.get("is_image", record.get("is_image", False)))
                     if record.get("status") == "pending" and int(record.get("attempts", 0)) < scan["max_pending_attempts"]: pending.append((iid, record))
                     continue
                 upload_dt = _parse_upload_date(candidate.get("upload_date"))
                 if _is_stale_notice(effective_cand_title, candidate.get("context", ""), candidate["url"], upload_date=upload_dt):
                     reason = _classify_stale_reason(effective_cand_title, candidate.get("context", ""), candidate["url"], upload_date=upload_dt) or "STALE"
-                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
+                    state["items"][iid] = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": f"Stale ({reason})", "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                     site_items_list.append((iid, candidate["title"], candidate["url"]))
                     continue
-                record = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "first_seen": utc_now(), "last_seen": utc_now(), "status": "pending", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
+                record = {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": is_pdf_or_notice, "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "pending", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None}
                 state["items"][iid] = record
                 site_items_list.append((iid, record["title"], record["url"]))
             else:
@@ -3654,6 +3691,7 @@ def main():
                 if candidate.get("context"): record["context"] = candidate["context"][:700]
                 if candidate.get("upload_date"): record["upload_date"] = candidate["upload_date"]
                 record["is_pdf"] = bool(candidate.get("is_pdf", record.get("is_pdf", False))) or is_pdf_or_notice
+                record["is_image"] = bool(candidate.get("is_image", record.get("is_image", False)))
             if (ss["baseline_complete"] and record.get("status") == "pending" and int(record.get("attempts", 0)) < scan["max_pending_attempts"]): pending.append((iid, record))
 
     suppress_stale_pending_and_ready(state)
@@ -3702,6 +3740,8 @@ def main():
         if not batch: continue
         try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline)
         except Exception as exc: print(f"[WARN] PDF batch fetch failed: {exc}", file=sys.stderr)
+        try: _fetch_images_for_batch(batch, scan, send_deadline=send_deadline)
+        except Exception as exc: print(f"[WARN] Image OCR batch failed safely: {exc}", file=sys.stderr)
         try:
             gemini_batch = []
             for iid, record in batch:
@@ -3834,7 +3874,7 @@ def main():
     _RUNTIME_PDF_CACHE.clear()
     try:
         state["stats"]["errors"] = int(state["stats"].get("errors", 0)) + run_errors
-        prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"])
+        prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"], max_sent_fingerprints=scan["max_sent_fingerprints"], max_html_fingerprints=scan["max_html_fingerprints"])
         refresh_stats(state)
         atomic_save_json(STATE_FILE, state, max_bytes=scan["max_state_bytes"])
         try: print(f"[STATE] records={len(state.get('items', {}))} bytes={STATE_FILE.stat().st_size}")
