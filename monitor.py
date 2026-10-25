@@ -116,6 +116,49 @@ STRONG_KEYWORDS = [
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
 _RUNTIME_PDF_CACHE: Dict[str, bytes] = {}
 _RUNTIME_PDF_CACHE_LOCK = threading.Lock()
+_RUNTIME_PDF_CACHE_MAX_BYTES = max(1 * 1024 * 1024, int(os.getenv("RUNTIME_PDF_CACHE_MAX_BYTES", str(80 * 1024 * 1024))))
+_RUNTIME_PDF_CACHE_BYTES = 0
+
+def _cache_put(key, content):
+    """Store PDF bytes in a bounded FIFO cache; never let cache errors break a notice run."""
+    global _RUNTIME_PDF_CACHE_BYTES
+    if not key or not isinstance(content, (bytes, bytearray, memoryview)):
+        return
+    value = bytes(content)
+    size = len(value)
+    if size <= 0 or size > _RUNTIME_PDF_CACHE_MAX_BYTES:
+        return
+    try:
+        with _RUNTIME_PDF_CACHE_LOCK:
+            old_value = _RUNTIME_PDF_CACHE.pop(key, None)
+            if old_value is not None:
+                _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(old_value))
+            while _RUNTIME_PDF_CACHE and _RUNTIME_PDF_CACHE_BYTES + size > _RUNTIME_PDF_CACHE_MAX_BYTES:
+                _old_key = next(iter(_RUNTIME_PDF_CACHE))
+                _old = _RUNTIME_PDF_CACHE.pop(_old_key, None)
+                if _old is not None:
+                    _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(_old))
+            _RUNTIME_PDF_CACHE[key] = value
+            _RUNTIME_PDF_CACHE_BYTES += size
+    except Exception as exc:
+        print(f"[WARN] PDF cache write skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+def _cache_get(key):
+    """Return cached PDF bytes or None; a cache miss must never fail the monitor."""
+    if not key:
+        return None
+    try:
+        with _RUNTIME_PDF_CACHE_LOCK:
+            return _RUNTIME_PDF_CACHE.get(key)
+    except Exception as exc:
+        print(f"[WARN] PDF cache read skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+def _cache_clear():
+    global _RUNTIME_PDF_CACHE_BYTES
+    with _RUNTIME_PDF_CACHE_LOCK:
+        _RUNTIME_PDF_CACHE.clear()
+        _RUNTIME_PDF_CACHE_BYTES = 0
 _OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
 _OCR_CONTENT_CACHE_MAX_ITEMS = 30
 _OCR_CONTENT_LOCK = threading.Lock()
@@ -301,6 +344,107 @@ def _is_notice_document_url(url):
     return any(hint in path for hint in _NOTICE_DOC_URL_HINTS)
 
 
+def _is_rims_non_notice_url(url):
+    """Return True for known RIMS service/navigation URLs, not official notice pages."""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = _normalize_host(parsed.hostname or "")
+        path = (parsed.path or "").rstrip("/").casefold()
+    except Exception:
+        return False
+    if host != "rimsranchi.ac.in":
+        return False
+    # This is the Online OPD registration service shown on the homepage, not a notice.
+    return path.endswith("/onln_reg_sys.php") or path == "onln_reg_sys.php"
+
+def _looks_like_rims_menu_dump(title, url=""):
+    """Detect RIMS global navigation text while preserving real notice titles."""
+    if not title:
+        return False
+    try:
+        host = _normalize_host(urlparse(str(url or "")).hostname or "")
+    except Exception:
+        host = ""
+    if host != "rimsranchi.ac.in":
+        return False
+    text = re.sub(r"\s+", " ", str(title)).casefold()
+    nav_phrases = (
+        "about us", "an introduction", "director administration",
+        "vice-chancellor", "university vice-chancellor", "rti pio",
+        "citizen charter", "on-going projects", "ongoing projects",
+        "how to reach", "academics", "departments faculty",
+        "admission info", "multidisciplinary", "director",
+    )
+    notice_phrases = (
+        "notification", "office order", "recruitment", "advertisement",
+        "examination", "exam result", "result", "admit card",
+        "tender", "corrigendum", "ph.d", "phd", "provisional",
+        "memo no", "letter no", "dated :", "dated:",
+        "सूचना", "अधिसूचना", "भर्ती", "परीक्षा", "परिणाम", "विज्ञापन",
+    )
+    nav_count = sum(1 for phrase in nav_phrases if phrase in text)
+    has_notice = any(phrase in text for phrase in notice_phrases)
+    return nav_count >= 3 and not has_notice
+
+def _should_suppress_rims_candidate(item):
+    """Suppress service links and navigation dumps, but do not discard notice documents."""
+    if not isinstance(item, dict):
+        return False
+    url = str(item.get("url", "") or "")
+    if _is_rims_non_notice_url(url):
+        return True
+    title = clean_text(str(item.get("explicit_title") or item.get("title") or ""), 500)
+    return bool(_looks_like_rims_menu_dump(title, url) and not _is_notice_document_url(url))
+
+
+def _is_nusrl_non_notice_url(url):
+    """Known NUSRL informational page that was incorrectly emitted as an admission notice."""
+    try:
+        parsed = urlparse(str(url or ""))
+        if (parsed.hostname or "").lower().removeprefix("www.") != "nusrlranchi.ac.in":
+            return False
+        path = (parsed.path or "/").rstrip("/").lower() or "/"
+        return path in {"/about-us", "/about", "/life-at-nusrl", "/campus"}
+    except Exception:
+        return False
+
+
+def _looks_like_nusrl_homepage_dump(title, url=""):
+    """Detect NUSRL homepage carousel/menu text, while retaining genuine notice titles."""
+    text = clean_text(str(title or ""), 700).casefold()
+    if not text:
+        return False
+    if _is_nusrl_non_notice_url(url):
+        return True
+    marketing_markers = (
+        "visit nusrl campus", "life at nusrl", "modern classrooms", 
+        "innovative infrastructure", "read more chevron_right", "chevron_right",
+    )
+    marker_count = sum(1 for marker in marketing_markers if marker in text)
+    has_real_notice_title = any(marker in text for marker in (
+        "provisionally eligible candidates", "walk-in interview", "vacancy notification",
+        "recruitment notice", "recruitment cancellation", "ph.d. admission",
+        "phd interview", "admission notification", "notice regarding", "examination schedule",
+        "circular of appointments", "advertisement for", "call for applications",
+    ))
+    return marker_count >= 2 and not has_real_notice_title
+
+
+def _should_suppress_site_noise(item):
+    """Common filter for known false-positive navigation/service candidates."""
+    if not isinstance(item, dict):
+        return False
+    if _should_suppress_rims_candidate(item):
+        return True
+    url = str(item.get("url", "") or "")
+    if _is_nusrl_non_notice_url(url):
+        return True
+    title = clean_text(str(item.get("explicit_title") or item.get("title") or ""), 700)
+    context = clean_text(str(item.get("context") or ""), 700)
+    combined = f"{title} {context}"
+    return _looks_like_nusrl_homepage_dump(combined, url)
+
+
 def _looks_like_menu_dump(title):
     if not title: return False
     words = title.split()
@@ -384,14 +528,16 @@ def _resolve_title(item):
         if not v: return False
         if v.startswith("http://") or v.startswith("https://"): return False
         return (not _is_generic_title(v) and not _is_language_selector(v)
-                and not _looks_like_menu_dump(v) and not _is_garbage_title(v))
+                and not _looks_like_menu_dump(v) and not _looks_like_rims_menu_dump(v, url)
+                and not _is_garbage_title(v))
     if _ok(explicit): return explicit
     if _ok(anchor): return anchor
     for candidate in (explicit, anchor):
-        if candidate and (_looks_like_menu_dump(candidate) or _is_garbage_title(candidate)):
+        if candidate and (_looks_like_menu_dump(candidate) or _looks_like_rims_menu_dump(candidate, url) or _is_garbage_title(candidate)):
             cleaned = _cleanup_menu_dump_title(candidate, url=url, explicit="")
             if cleaned and cleaned != candidate and _ok(cleaned): return cleaned
-    if context and not _is_generic_title(context) and not _is_language_selector(context) and not _looks_like_menu_dump(context):
+    if (context and not _is_generic_title(context) and not _is_language_selector(context)
+            and not _looks_like_menu_dump(context) and not _looks_like_rims_menu_dump(context, url)):
         if not (context.startswith("http://") or context.startswith("https://")):
             return context[:200]
     slug = _title_from_url(url, min_len=5)
@@ -861,6 +1007,8 @@ def _is_navigation_url(url):
         if (fragment.startswith("/") or fragment.startswith("!/")) and len(fragment) > 2: return False
         target = (parsed.path or "") + ("?" + parsed.query if parsed.query else "")
     except Exception: return False
+    if _is_rims_non_notice_url(url):
+        return True
     for pat in _NON_NOTICE_URL_PATTERNS:
         if pat.search(target): return True
     return False
@@ -1840,6 +1988,9 @@ def extract_candidates(html_text, page_url, site, scan):
         href = _canonical_spa_url(urljoin(page_url, a.get("href", "")))
         if not is_http_url(href) or not same_host(page_url, href): continue
         if _is_navigation_url(href): continue
+        if _is_rims_non_notice_url(href):
+            print(f"[FILTER] Ignored RIMS service URL: {href[:120]}", file=sys.stderr)
+            continue
 
         title = clean_text(a.get_text(" ", strip=True), 300)
         parent = a.find_parent("tr")
@@ -1899,9 +2050,26 @@ def extract_candidates(html_text, page_url, site, scan):
             parts = re.split(r"[|\-–—:]", context)
             for p in parts:
                 p = clean_text(p.strip(), 200)
-                if len(p) >= 20 and not _is_generic_title(p) and not _is_language_selector(p):
+                if (len(p) >= 20 and not _is_generic_title(p)
+                        and not _is_language_selector(p)
+                        and not _looks_like_menu_dump(p)
+                        and not _looks_like_rims_menu_dump(p, href)):
                     title = p
                     break
+
+        if _looks_like_rims_menu_dump(title, href):
+            if not _is_notice_document_url(href):
+                print(f"[FILTER] Ignored RIMS navigation-text candidate: {title[:100]!r}", file=sys.stderr)
+                continue
+            replacement = _filename_to_title(href) or _title_from_url(href, min_len=8)
+            if replacement and not _looks_like_rims_menu_dump(replacement, href):
+                title = replacement
+            else:
+                title = f"RIMS Notice Document {hashlib.sha256(href.encode()).hexdigest()[:8]}"
+
+        if _looks_like_nusrl_homepage_dump(title, href):
+            print(f"[FILTER] Ignored NUSRL homepage/navigation text: {title[:100]!r}", file=sys.stderr)
+            continue
 
         score = local_score(title, href, context, keywords)
         href_lower = href.lower()
@@ -3503,16 +3671,35 @@ def run_self_tests():
     legacy_record = {"title":"Old Notice", "context":"old static context that is long enough", "url":"https://example.edu/old-notice"}
     check(_is_duplicate_by_pdf_hash(legacy_state, legacy_record, exclude_iid="new-id") == "Old Notice", "Legacy html-v1 fingerprint was not recognized")
 
+    rims_menu = ("About Us ► An Introduction Director Administration University Vice-Chancellor "
+                 "RTI PIO Citizen Charter On-going Projects How to Reach RIMS Academics ► "
+                 "Departments Faculty Admission Info Multidisciplinary")
+    check(_looks_like_rims_menu_dump(rims_menu, "https://rimsranchi.ac.in/"), "RIMS menu dump was not detected")
+    check(_should_suppress_rims_candidate({"url":"https://rimsranchi.ac.in/onln_reg_sys.php", "title":"For Online OPD Registration, click here"}), "RIMS OPD service URL was not suppressed")
+    check(not _should_suppress_rims_candidate({"url":"https://rimsranchi.ac.in/notifications-order.php", "title":"Notice Regarding Examination Schedule"}), "Real RIMS notice page was incorrectly suppressed")
+    check(_should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/about-us/", "title":"Visit NUSRL Campus Read More chevron_right"}), "NUSRL About Us page was not suppressed")
+    check(_should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/", "title":"Visit NUSRL Campus modern classrooms Life at NUSRL Read More chevron_right"}), "NUSRL homepage marketing dump was not suppressed")
+    check(not _should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/announcements/", "title":"List of Provisionally Eligible Candidates for PG Diploma Programmes"}), "Real NUSRL announcement was incorrectly suppressed")
+    check(not _looks_like_rims_menu_dump("Notice Regarding Examination Schedule", "https://rimsranchi.ac.in/notifications-order.php"), "Real RIMS notice title was classified as menu text")
+
+    # Cache tests use a tiny local key/value pair; no network or Telegram access.
+    _cache_clear()
+    _cache_put("self-test-pdf", b"pdf-test-content")
+    check(_cache_get("self-test-pdf") == b"pdf-test-content", "PDF cache write/read failed")
+    _cache_clear()
+    check(_cache_get("self-test-pdf") is None, "PDF cache clear failed")
+
     print(f"[SELF-TEST] PASS: {checks} offline regression checks; no websites or Telegram messages used.")
     return 0
 
 
 def main():
-    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _OCR_CONTENT_CACHE
+    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _RUNTIME_PDF_CACHE_BYTES, _OCR_CONTENT_CACHE
     global _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
     global _JS_RENDER_COUNT
     _RUNTIME_PDF_CACHE = {}
+    _RUNTIME_PDF_CACHE_BYTES = 0
     _OCR_CONTENT_CACHE = {}
     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
@@ -3619,6 +3806,9 @@ def main():
         baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), int(site.get("baseline_max_errors", scan.get("baseline_max_errors", 3))))
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
+                if _should_suppress_site_noise(candidate):
+                    print(f"[FILTER] Baseline navigation/service candidate suppressed: {str(candidate.get('url', ''))[:100]}", file=sys.stderr)
+                    continue
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
                 state["items"].setdefault(iid, {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None})
             ss["baseline_complete"] = True
@@ -3633,6 +3823,9 @@ def main():
 
         site_items_list = site_index.get(sid, [])
         for candidate in candidates:
+            if _should_suppress_site_noise(candidate):
+                print(f"[FILTER] Navigation/service candidate suppressed: {str(candidate.get('url', ''))[:100]}", file=sys.stderr)
+                continue
             iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
             record = state["items"].get(iid)
             upload_dt = _parse_upload_date(candidate.get("upload_date"))
@@ -3756,6 +3949,17 @@ def main():
     suppress_stale_pending_and_ready(state)
     pending = [(iid, record) for iid, record in pending if record.get("status") == "pending"]
     pending = enqueue_persisted_pending(state, pending, scan["max_pending_attempts"], {site["id"] for site in cfg["websites"]})
+    _safe_pending = []
+    for _iid, _record in pending:
+        if _should_suppress_site_noise(_record):
+            if _record.get("status") == "pending":
+                _record["status"] = "ignored"
+                _record["last_error"] = "Suppressed known navigation/service page; not a notice"
+                _record["terminal_at"] = utc_now()
+            print(f"[FILTER] Suppressed persisted navigation/service item: {str(_record.get('url', ''))[:100]}", file=sys.stderr)
+            continue
+        _safe_pending.append((_iid, _record))
+    pending = _safe_pending
     state["initialized"] = all(site_state(state, site["id"])["baseline_complete"] for site in cfg["websites"])
     pending = list({iid: record for iid, record in pending}.items())
     pending.sort(key=lambda pair: pending_priority(pair[1], scan["keywords"]), reverse=True)
@@ -3930,7 +4134,7 @@ def main():
             else: print(f"[WARN] Health alert not delivered: {detail}", file=sys.stderr)
         if sent_count > 0: state["last_successful_notify_at"] = utc_now()
     except Exception as exc: print(f"[WARN] Health alert check failed: {exc}", file=sys.stderr)
-    _RUNTIME_PDF_CACHE.clear()
+    _cache_clear()
     try:
         state["stats"]["errors"] = int(state["stats"].get("errors", 0)) + run_errors
         prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"], max_sent_fingerprints=scan["max_sent_fingerprints"], max_html_fingerprints=scan["max_html_fingerprints"])
