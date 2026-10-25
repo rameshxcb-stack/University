@@ -75,6 +75,7 @@ MAX_PDF_ATTEMPTS = 3
 TELEGRAM_SAFE_LIMIT = 4000
 TELEGRAM_CAPTION_LIMIT = 1024
 _RUNTIME_PDF_CACHE_MAX_ITEMS = 20
+_RUNTIME_PDF_CACHE_MAX_BYTES = 80 * 1024 * 1024  # Bound memory even when PDFs are large.
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
 
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").strip().lower() == "true"
@@ -115,6 +116,7 @@ STRONG_KEYWORDS = [
 
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
 _RUNTIME_PDF_CACHE: Dict[str, bytes] = {}
+_RUNTIME_PDF_CACHE_BYTES = 0
 _RUNTIME_PDF_CACHE_LOCK = threading.Lock()
 _OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
 _OCR_CONTENT_CACHE_MAX_ITEMS = 30
@@ -134,6 +136,54 @@ _ROBOTS_CACHE = {}
 _TESSERACT_WARNED: bool = False
 _JS_RENDER_COUNT = 0
 _JS_RENDER_COUNT_LOCK = threading.Lock()
+
+
+def _cache_put(url, content):
+    """Store PDF bytes in a bounded, thread-safe, per-run FIFO cache.
+
+    Returns False for invalid/oversized values. Cache failures must never block
+    notification delivery; the caller can still use the downloaded bytes.
+    """
+    global _RUNTIME_PDF_CACHE_BYTES
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if not isinstance(content, (bytes, bytearray, memoryview)) or not content:
+        return False
+
+    key = url.strip()
+    payload = bytes(content)
+    payload_size = len(payload)
+    max_bytes = max(1, int(_RUNTIME_PDF_CACHE_MAX_BYTES))
+    max_items = max(1, int(_RUNTIME_PDF_CACHE_MAX_ITEMS))
+    # Do not let one unusually large PDF consume the entire runtime cache.
+    if payload_size > max_bytes:
+        return False
+
+    with _RUNTIME_PDF_CACHE_LOCK:
+        previous = _RUNTIME_PDF_CACHE.pop(key, None)
+        if previous is not None:
+            _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(previous))
+
+        while _RUNTIME_PDF_CACHE and (
+            len(_RUNTIME_PDF_CACHE) >= max_items
+            or _RUNTIME_PDF_CACHE_BYTES + payload_size > max_bytes
+        ):
+            oldest_key = next(iter(_RUNTIME_PDF_CACHE))
+            oldest = _RUNTIME_PDF_CACHE.pop(oldest_key, None)
+            if oldest is not None:
+                _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(oldest))
+
+        _RUNTIME_PDF_CACHE[key] = payload
+        _RUNTIME_PDF_CACHE_BYTES += payload_size
+    return True
+
+
+def _cache_get(url):
+    """Read cached PDF bytes under the same lock used for eviction."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    with _RUNTIME_PDF_CACHE_LOCK:
+        return _RUNTIME_PDF_CACHE.get(url.strip())
 
 _NAV_SIGNALS: Tuple[str, ...] = (
     "home", "homepage", "about us", "about", "contact us", "contact", "feedback", "site map", "sitemap", "skip to content", "accessibility", "screen reader", "whats new", "what's new", "whatsnew", "latest news", "latest update", "latest updates", "photo gallery", "video gallery", "gallery", "facebook", "twitter", "instagram", "youtube", "whatsapp", "linkedin", "social media", "follow us", "share", "login", "sign in", "sign up", "register", "logout", "main menu", "menu", "navigation",
@@ -2442,10 +2492,8 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
 
 
 def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
-    global _RUNTIME_PDF_CACHE
-    if pdf_url in _RUNTIME_PDF_CACHE:
-        content = _RUNTIME_PDF_CACHE[pdf_url]
-    else:
+    content = _cache_get(pdf_url)
+    if content is None:
         try:
             session = make_session()
             content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, timeout, verify_ssl=verify_ssl)
@@ -2851,7 +2899,7 @@ def _build_pdf_caption(full_message, classification):
 def send_notification_with_pdf(token, chat_id, record, full_message):
     pdf_url = record.get("url", "")
     filename = _safe_filename(pdf_url)
-    pdf_bytes = _RUNTIME_PDF_CACHE.get(pdf_url)
+    pdf_bytes = _cache_get(pdf_url)
     if pdf_bytes is None:
         try:
             session = make_session()
@@ -3449,11 +3497,12 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
 
 
 def main():
-    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _OCR_CONTENT_CACHE
+    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _RUNTIME_PDF_CACHE_BYTES, _OCR_CONTENT_CACHE
     global _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
     global _JS_RENDER_COUNT
     _RUNTIME_PDF_CACHE = {}
+    _RUNTIME_PDF_CACHE_BYTES = 0
     _OCR_CONTENT_CACHE = {}
     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
@@ -3871,7 +3920,9 @@ def main():
             else: print(f"[WARN] Health alert not delivered: {detail}", file=sys.stderr)
         if sent_count > 0: state["last_successful_notify_at"] = utc_now()
     except Exception as exc: print(f"[WARN] Health alert check failed: {exc}", file=sys.stderr)
-    _RUNTIME_PDF_CACHE.clear()
+    with _RUNTIME_PDF_CACHE_LOCK:
+        _RUNTIME_PDF_CACHE.clear()
+        _RUNTIME_PDF_CACHE_BYTES = 0
     try:
         state["stats"]["errors"] = int(state["stats"].get("errors", 0)) + run_errors
         prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"], max_sent_fingerprints=scan["max_sent_fingerprints"], max_html_fingerprints=scan["max_html_fingerprints"])
