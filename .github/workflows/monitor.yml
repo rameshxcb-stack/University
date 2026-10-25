@@ -1,73 +1,115 @@
-name: Jharkhand University Notification Monitor
+name: Jharkhand University Notice Monitor
 
 on:
-  workflow_dispatch: # External Cron isse trigger karega
+  workflow_dispatch:
+  schedule:
+    # Har 1 ghante mein run hoga (0 minute par)
+    - cron: '0 * * * *'
 
-# ✅ YEH BLOCK ADD KIYA GAYA HAI (Queue System ke liye)
+permissions:
+  contents: write
+
+# Serialize all runs that read/write state.json. Do not cancel a run mid-send.
 concurrency:
-  group: university-notification-monitor
-  cancel-in-progress: false # Agar purana run chal raha hai, toh naya run queue mein wait karega
+  group: university-notice-monitor
+  cancel-in-progress: false
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 90        # Safety net (agar run atak jaye toh 90 min mein kill)
-
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-
-      # ---------- CACHE: pip ----------
-      - name: Cache pip packages
-        uses: actions/cache@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          fetch-depth: 0
+          persist-credentials: true
 
-      # ---------- CACHE: Playwright browsers ----------
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Tesseract OCR (Hindi + English)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+          tesseract --version
+          tesseract --list-langs
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install chromium --with-deps
 
-      - name: Install Tesseract Hindi
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-hin
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run self-tests
+        run: python monitor.py --test
 
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          OCR_DPI: "250"
-          OCR_ENABLED: "true"
-          PADDLEOCR_ENABLED: "false" # Code mein already disabled hai
-          TESSERACT_ENABLED: "true"
-          MAX_RUN_SECONDS: "4800"        # 80 minutes max run time
-          SEND_RESERVE_SECONDS: "600"    # reserve 10 min for sending
+          JS_RENDER_ENABLED: 'true'
+          TESSERACT_ENABLED: 'true'
+          TESSERACT_LANG: 'hin+eng'
         run: python monitor.py
 
-      - name: Upload state
+      # Always try to persist the latest state, even if scanning or notification
+      # processing failed after state.json was changed. A failed push fails this job.
+      - name: Commit and push state.json
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: monitor-state
-          path: state.json
-          retention-days: 7
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/* ]]; then
+            echo "Refusing to push state from a non-branch ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Add first so both tracked and newly-created state files are detected.
+          git add -- state.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update university monitor state [skip ci]'
+          else
+            echo 'state.json has no staged changes.'
+          fi
+
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            echo "State push attempt ${attempt}/5"
+            git fetch origin "$TARGET_BRANCH"
+
+            # Rebase our state commit onto the latest branch. If a concurrent
+            # external commit conflicts, abort cleanly and retry; never silently
+            # claim success when the state was not pushed.
+            if ! git rebase "origin/$TARGET_BRANCH"; then
+              git rebase --abort || true
+              if [[ "$attempt" -eq 5 ]]; then
+                echo 'Could not rebase state commit after 5 attempts.' >&2
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+
+            if git push origin "HEAD:refs/heads/$TARGET_BRANCH"; then
+              pushed=true
+              break
+            fi
+            if [[ "$attempt" -lt 5 ]]; then sleep 5; fi
+          done
+
+          if [[ "$pushed" != true ]]; then
+            echo 'ERROR: state.json was not persisted to the repository.' >&2
+            exit 1
+          fi
