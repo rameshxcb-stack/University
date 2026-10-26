@@ -1,20 +1,20 @@
 {
   "scan": {
-    "request_timeout_seconds": 45,
+    "request_timeout_seconds": 60,
     "max_workers": 5,
     "max_items_per_site": 150,
-    "max_discovery_pages_per_site": 20,
-    "max_archive_pages_per_site": 25,
-    "max_pagination_per_archive": 4,
-    "max_new_items_per_run": 25,
+    "max_discovery_pages_per_site": 18,
+    "max_archive_pages_per_site": 35,
+    "max_pagination_per_archive": 8,
+    "max_new_items_per_run": 35,
     "gemini_batch_size": 3,
-    "gemini_max_calls_per_run": 20,
-    "retention_days": 60,
-    "sent_retention_days": 90,
+    "gemini_max_calls_per_run": 25,
+    "retention_days": 90,
+    "sent_retention_days": 180,
     "ignored_retention_days": 30,
-    "baseline_retention_days": 60,
-    "domain_delay_seconds": 0.5,
-    "max_state_items": 4000,
+    "baseline_retention_days": 90,
+    "domain_delay_seconds": 0.4,
+    "max_state_items": 6000,
     "max_state_bytes": 8000000,
     "max_pending_attempts": 500,
     "stale_notice_days": 15,
@@ -68,7 +68,53 @@
       "सूचना",
       "अधिसूचना",
       "प्लेसमेंट",
-      "छात्रावास"
+      "छात्रावास",
+      "latest notice",
+      "notice board",
+      "noticeboard",
+      "official notification",
+      "press release",
+      "department notice",
+      "date extended",
+      "corrigendum",
+      "revised notice",
+      "exam form",
+      "exam schedule",
+      "exam routine",
+      "academic calendar",
+      "semester examination",
+      "backlog examination",
+      "reappear",
+      "phd admission",
+      "research admission",
+      "appointment",
+      "walk-in interview",
+      "faculty recruitment",
+      "non-teaching",
+      "teaching post",
+      "selection list",
+      "merit list",
+      "नवीनतम सूचना",
+      "सूचना पट्ट",
+      "प्रेस विज्ञप्ति",
+      "विभागीय सूचना",
+      "तिथि बढ़ाई",
+      "शुद्धिपत्र",
+      "संशोधित सूचना",
+      "परीक्षा फॉर्म",
+      "परीक्षा कार्यक्रम",
+      "परीक्षा दिनचर्या",
+      "शैक्षणिक कैलेंडर",
+      "बैकलॉग परीक्षा",
+      "पुनर्परीक्षा",
+      "पीएचडी प्रवेश",
+      "नियुक्ति",
+      "साक्षात्कार",
+      "शिक्षक भर्ती",
+      "गैर शिक्षण",
+      "चयन सूची",
+      "मेरिट सूची",
+      "आवेदन तिथि"
     ],
     "discovery_keywords": [
       "notice",
@@ -132,10 +178,56 @@
       "अपडेट",
       "इवेंट",
       "घोषणा",
-      "रिजल्ट"
+      "रिजल्ट",
+      "latest notice",
+      "notice board",
+      "noticeboard",
+      "official notification",
+      "press release",
+      "department notice",
+      "date extended",
+      "corrigendum",
+      "revised notice",
+      "exam form",
+      "exam schedule",
+      "exam routine",
+      "academic calendar",
+      "semester examination",
+      "backlog examination",
+      "reappear",
+      "phd admission",
+      "research admission",
+      "appointment",
+      "walk-in interview",
+      "faculty recruitment",
+      "non-teaching",
+      "teaching post",
+      "selection list",
+      "merit list",
+      "नवीनतम सूचना",
+      "सूचना पट्ट",
+      "प्रेस विज्ञप्ति",
+      "विभागीय सूचना",
+      "तिथि बढ़ाई",
+      "शुद्धिपत्र",
+      "संशोधित सूचना",
+      "परीक्षा फॉर्म",
+      "परीक्षा कार्यक्रम",
+      "परीक्षा दिनचर्या",
+      "शैक्षणिक कैलेंडर",
+      "बैकलॉग परीक्षा",
+      "पुनर्परीक्षा",
+      "पीएचडी प्रवेश",
+      "नियुक्ति",
+      "साक्षात्कार",
+      "शिक्षक भर्ती",
+      "गैर शिक्षण",
+      "चयन सूची",
+      "मेरिट सूची",
+      "आवेदन तिथि"
     ],
     "sitemap_enabled": true,
-    "baseline_max_errors": 3,
+    "baseline_max_errors": 5,
     "exclude_title_signals": [
       "gst return",
       "income tax",
@@ -144,18 +236,27 @@
       "minutes of meeting",
       "right to information",
       "rti application"
-    ]
+    ],
+    "diagnostics": false
   },
   "websites": [
     {
       "id": "vbu-hazaribagh",
       "name": "Vinoba Bhave University, Hazaribagh",
-      "url": "https://www.vbu.ac.in/notice/Notice",
+      "url": "https://www.vbu.ac.in/",
       "enabled": true,
+      "verify_ssl": false,
       "js_render": "always",
-      "js_wait_after_ms": 6500,
-      "js_wait_for_selector": "a[href*='.pdf'], a[ng-href*='.pdf'], a[href*='/ftpwebapps/'], a[ng-href*='/ftpwebapps/'], .notice-list, .notice, table, .pagination, [aria-label*='Next'], button",
+      "js_wait_after_ms": 8000,
+      "js_wait_for_selector": "a[href*='.pdf'], a[ng-href*='.pdf'], .notice-list, .notice, table",
+      "js_selector_timeout_ms": 45000,
       "js_scroll_bottom": true,
+      "baseline_max_errors": 15,
+      "request_timeout_seconds": 90,
+      "max_items_per_site": 200,
+      "direct_urls": [
+        "https://www.vbu.ac.in/notice/Notice"
+      ],
       "keywords": [
         "notice",
         "exam",
@@ -163,74 +264,20 @@
         "admission",
         "syllabus",
         "timetable",
-        "revaluation",
-        "notification",
-        "announcement",
-        "examination",
-        "merit",
-        "convocation",
-        "recruitment",
-        "vacancy",
-        "scholarship",
-        "counselling",
-        "migration",
-        "registration",
-        "phd",
-        "programme",
-        "program",
-        "centre",
-        "schedule",
-        "सूचना",
-        "अधिसूचना",
-        "नोटिस",
-        "परीक्षा",
-        "परिणाम",
-        "प्रवेश",
-        "पाठ्यक्रम",
-        "समय सारिणी",
-        "मेरिट",
-        "दीक्षांत",
-        "भर्ती",
-        "छात्रवृत्ति",
-        "माइग्रेशन",
-        "नामांकन",
-        "कार्यक्रम"
+        "revaluation"
       ],
       "discovery_keywords": [
         "notice",
         "exam",
         "result",
         "admission",
-        "syllabus",
         "revaluation",
-        "migration",
-        "notices",
-        "notification",
-        "notifications",
-        "examination",
         "merit",
-        "convocation",
-        "recruitment",
-        "vacancy",
-        "download",
-        "notice/notice",
-        "सूचना",
-        "नोटिस",
-        "परीक्षा",
-        "परिणाम",
-        "प्रवेश",
-        "दीक्षांत"
+        "verification"
       ],
-      "js_selector_timeout_ms": 15000,
-      "request_timeout_seconds": 90,
-      "max_items_per_site": 200,
-      "direct_urls": [
-        "https://www.vbu.ac.in/notice/Notice",
-        "https://www.vbu.ac.in/"
-      ],
-      "max_discovery_pages_per_site": 30,
-      "max_archive_pages_per_site": 40,
-      "max_pagination_per_archive": 8
+      "max_discovery_pages_per_site": 18,
+      "max_archive_pages_per_site": 35,
+      "diagnostics": true
     },
     {
       "id": "ranchi-university",
@@ -244,36 +291,46 @@
         "admission",
         "exam",
         "result"
-      ]
+      ],
+      "max_items_per_site": 150
     },
     {
       "id": "npu-daltonganj",
       "name": "Nilamber-Pitamber University, Palamu",
       "url": "https://npu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "kolhan-university",
       "name": "Kolhan University, Chaibasa",
       "url": "https://www.kolhanuniversity.ac.in/",
       "enabled": true,
-      "js_render": "auto",
-      "js_wait_after_ms": 3000
+      "js_render": "always",
+      "js_wait_after_ms": 3000,
+      "js_wait_for_selector": "a[href*='.pdf'], a[href*='notice'], a[href*='notification'], table, .notice, .notice-list, .announcement",
+      "js_selector_timeout_ms": 20000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "skmu-dumka",
       "name": "Sido Kanhu Murmu University, Dumka",
       "url": "https://skmu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "dspmu-ranchi",
       "name": "Dr. Shyama Prasad Mukherjee University, Ranchi",
       "url": "https://dspmuranchi.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "bbmku-dhanbad",
@@ -281,28 +338,43 @@
       "url": "https://bbmku.ac.in/",
       "enabled": true,
       "js_render": "auto",
-      "js_wait_after_ms": 3500
+      "js_wait_after_ms": 3500,
+      "max_items_per_site": 150
     },
     {
       "id": "jwu-jamshedpur",
       "name": "Jamshedpur Women's University",
       "url": "https://jwu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "always",
+      "js_wait_after_ms": 6000,
+      "js_wait_for_selector": "table, .notice, .news, nav",
+      "js_selector_timeout_ms": 15000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "bmtu-khunti",
       "name": "Birsa Munda Tribal University, Khunti",
       "url": "https://bmtu.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "always",
+      "js_wait_after_ms": 3000,
+      "js_wait_for_selector": "a[href*='.pdf'], a[href*='notice'], a[href*='notification'], table, .notice, .notice-list, .announcement",
+      "js_selector_timeout_ms": 20000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "jut-ranchi",
       "name": "Jharkhand University of Technology, Ranchi",
       "url": "https://jutranchi.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "verify_ssl": false,
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "cuj-ranchi",
@@ -311,7 +383,11 @@
       "enabled": true,
       "js_render": "always",
       "js_wait_after_ms": 3500,
-      "js_wait_for_selector": "table, .notice, .news"
+      "js_wait_for_selector": "table, .notice, .news",
+      "js_selector_timeout_ms": 20000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "iitism-dhanbad",
@@ -319,14 +395,20 @@
       "url": "https://www.iitism.ac.in/",
       "enabled": true,
       "js_render": "always",
-      "js_wait_after_ms": 3000
+      "js_wait_after_ms": 3000,
+      "js_wait_for_selector": "a[href*='.pdf'], a[href*='notice'], a[href*='notification'], table, .notice, .notice-list, .announcement",
+      "js_selector_timeout_ms": 20000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "nitjsr",
       "name": "NIT Jamshedpur",
       "url": "https://nitjsr.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "iiimranchi",
@@ -334,35 +416,44 @@
       "url": "https://www.iimranchi.ac.in/",
       "enabled": true,
       "js_render": "always",
-      "js_wait_after_ms": 3000
+      "js_wait_after_ms": 3000,
+      "js_wait_for_selector": "a[href*='.pdf'], a[href*='notice'], a[href*='notification'], table, .notice, .notice-list, .announcement",
+      "js_selector_timeout_ms": 20000,
+      "js_scroll_bottom": true,
+      "request_timeout_seconds": 60,
+      "max_items_per_site": 150
     },
     {
       "id": "iiitranchi",
       "name": "IIIT Ranchi",
       "url": "https://iiitranchi.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "bitmesra",
       "name": "BIT Mesra, Ranchi",
       "url": "https://www.bitmesra.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "bitsindri",
       "name": "BIT Sindri, Dhanbad",
       "url": "https://bitsindri.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "xlri-jamshedpur",
       "name": "XLRI Jamshedpur",
       "url": "https://xlri.ac.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "rims-ranchi",
@@ -376,31 +467,17 @@
         "https://rimsranchi.ac.in/notifications-order.php",
         "https://rimsranchi.ac.in/recruitment-in-new.php"
       ],
-      "keywords": [
-        "notifications",
-        "office order",
-        "recruitment",
-        "phd",
-        "interview",
-        "corrigendum",
-        "अधिसूचना",
-        "नियुक्ति",
-        "साक्षात्कार"
-      ],
-      "discovery_keywords": [
-        "notifications-order",
-        "info-desk-new",
-        "recruitment-in-new",
-        "recruitment",
-        "office-order"
-      ]
+      "max_items_per_site": 200,
+      "diagnostics": true,
+      "request_timeout_seconds": 60
     },
     {
       "id": "bau-ranchi",
       "name": "Birsa Agricultural University, Ranchi",
       "url": "https://bauranchi.org/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "nusrl-ranchi",
@@ -408,29 +485,7 @@
       "url": "https://nusrlranchi.ac.in/",
       "enabled": true,
       "js_render": "auto",
-      "direct_urls": [
-        "https://nusrlranchi.ac.in/announcements/",
-        "https://nusrlranchi.ac.in/latest-news/",
-        "https://nusrlranchi.ac.in/Tenders/"
-      ],
-      "keywords": [
-        "notice",
-        "notification",
-        "announcement",
-        "admission",
-        "result",
-        "examination",
-        "recruitment",
-        "vacancy",
-        "interview",
-        "tender",
-        "circular",
-        "eligible candidates",
-        "provisional",
-        "ph.d.",
-        "walk-in interview"
-      ],
-      "js_wait_after_ms": 2500
+      "max_items_per_site": 150
     },
     {
       "id": "arka-jain-university",
@@ -438,26 +493,31 @@
       "url": "https://arkajainuniversity.ac.in/",
       "enabled": true,
       "js_render": "auto",
-      "js_wait_after_ms": 2500
+      "js_wait_after_ms": 2500,
+      "max_items_per_site": 150
     },
     {
       "id": "capital-university",
       "name": "Capital University, Koderma",
       "url": "https://capitaluniversity.edu.in/",
       "enabled": true,
-      "js_render": "auto"
+      "js_render": "auto",
+      "max_items_per_site": 150
     },
     {
       "id": "aisect-university",
       "name": "AISECT University, Hazaribagh",
-      "url": "https://aisectuniversity.ac.in/",
+      "url": "https://www.aisectuniversityjharkhand.ac.in/",
       "enabled": true,
       "js_render": "always",
-      "js_wait_after_ms": 10000,
-      "js_wait_for_selector": "table, .notice, .notice-list, .news, .announcement, .notice-item, .announcement-list, a[href*=\"pdf\"], a[href*=\"notice\"]",
+      "js_wait_after_ms": 8000,
+      "request_timeout_seconds": 90,
+      "baseline_max_errors": 15,
+      "js_wait_for_selector": "a[href*='.pdf'], a[href*='notice'], a[href*='notification'], table, .notice, .notice-list, .announcement",
+      "js_selector_timeout_ms": 45000,
       "js_scroll_bottom": true,
-      "request_timeout_seconds": 120,
-      "js_selector_timeout_ms": 45000
+      "max_items_per_site": 150,
+      "diagnostics": true
     }
   ]
-}
+    }
