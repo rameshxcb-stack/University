@@ -3955,5 +3955,42 @@ def main():
     return 0
 
 
+def run_self_tests():
+    """Offline checks only: no website requests, Telegram sends, Gemini calls, or state writes."""
+    checks = []
+    def check(name, condition):
+        if not condition:
+            raise AssertionError(name)
+        checks.append(name)
+
+    cfg = get_config()
+    sites = cfg.get("websites", [])
+    ids = [site.get("id") for site in sites]
+    check("config_has_enabled_websites", len(sites) > 0)
+    check("site_ids_are_unique", len(ids) == len(set(ids)))
+    check("all_site_urls_are_http", all(is_http_url(site.get("url", "")) for site in sites))
+    check("vbu_site_configured", "vbu-hazaribagh" in ids)
+    check("rims_site_configured", "rims-ranchi" in ids)
+    check("aisect_site_configured", "aisect-university" in ids)
+    check("diagnostics_enabled_for_vbu", next(x for x in sites if x["id"] == "vbu-hazaribagh").get("diagnostics") is True)
+    check("diagnostics_enabled_for_rims", next(x for x in sites if x["id"] == "rims-ranchi").get("diagnostics") is True)
+    check("diagnostics_enabled_for_aisect", next(x for x in sites if x["id"] == "aisect-university").get("diagnostics") is True)
+    check("canonical_url_keeps_https", canonical_url("https://example.com/path") == "https://example.com/path")
+    check("pdf_url_detection", is_pdf("https://example.com/notice.pdf"))
+    check("non_pdf_url_detection", not is_pdf("https://example.com/notice.html"))
+    check("empty_page_detection", _is_empty_page_text("<html><body>No records found</body></html>"))
+    check("nonempty_page_detection", not _is_empty_page_text("<html><body>Notice</body></html>"))
+    print(f"[SELF-TEST] PASS: {len(checks)} offline checks; no websites, Telegram messages, Gemini calls, or state writes used.")
+    for name in checks:
+        print(f"[SELF-TEST] PASS {name}")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--test" in sys.argv[1:]:
+        try:
+            raise SystemExit(run_self_tests())
+        except Exception as exc:
+            print(f"[SELF-TEST] FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
     raise SystemExit(main())
