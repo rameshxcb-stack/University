@@ -284,6 +284,64 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
                     if _has_unrendered_angular_templates(html_content):
                         page.wait_for_timeout(min(3000, max(500, wait_after_ms)))
                         html_content = page.content()
+
+                    # VBU's notice listing is JavaScript-rendered. Some versions paginate
+                    # through buttons instead of ordinary hrefs, so capture up to 8 pages.
+                    parsed_target = urlparse(page.url or url)
+                    is_vbu_notice_page = (
+                        (parsed_target.hostname or "").lower().removeprefix("www.") == "vbu.ac.in"
+                        and "/notice/notice" in (parsed_target.path or "").lower()
+                    )
+                    if is_vbu_notice_page:
+                        captured_bodies = []
+                        seen_page_hashes = set()
+                        for page_index in range(8):
+                            try:
+                                body_html = page.locator("body").inner_html(timeout=2500)
+                            except Exception:
+                                body_html = page.content()
+                            page_hash = hashlib.sha256(body_html.encode("utf-8", errors="ignore")).hexdigest()
+                            if page_hash in seen_page_hashes:
+                                break
+                            seen_page_hashes.add(page_hash)
+                            captured_bodies.append(body_html)
+                            if page_index >= 7:
+                                break
+                            next_selectors = (
+                                'a[rel="next"]',
+                                'a[aria-label*="next" i]',
+                                'button[aria-label*="next" i]',
+                                '.pagination .next:not(.disabled) a',
+                                '.pagination .next:not(.disabled)',
+                                '.page-item.next:not(.disabled) a',
+                                'li.next:not(.disabled) a'
+                            )
+                            clicked = False
+                            for next_selector in next_selectors:
+                                try:
+                                    locator = page.locator(next_selector).first
+                                    if locator.count() and locator.is_visible() and locator.is_enabled():
+                                        locator.click(timeout=1800)
+                                        page.wait_for_timeout(900)
+                                        clicked = True
+                                        break
+                                except Exception:
+                                    continue
+                            if not clicked:
+                                try:
+                                    import re as _re
+                                    locator = page.locator("a, button").filter(has_text=_re.compile(r"^(?:next|›|»|>|अगला|आगे)$", _re.I)).last
+                                    if locator.count() and locator.is_visible() and locator.is_enabled():
+                                        locator.click(timeout=1800)
+                                        page.wait_for_timeout(900)
+                                        clicked = True
+                                except Exception:
+                                    clicked = False
+                            if not clicked:
+                                break
+                        if len(captured_bodies) > 1:
+                            html_content = "<!doctype html><html><body>" + "\n<!-- VBU PAGINATED NOTICE PAGE -->\n".join(captured_bodies) + "</body></html>"
+                            print(f"[VBU-PAGINATION] Captured {len(captured_bodies)} notice-list page(s): {url[:100]}", file=sys.stderr)
                 except Exception as exc: return None, url, f"playwright_content_error:{type(exc).__name__}"
                 if html_content:
                     global _JS_RENDER_COUNT
@@ -2694,6 +2752,10 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
     raw_for_title = raw_text[:MAX_PDF_RAW_TEXT_CHARS]
     if cleaned and len(cleaned) >= 20:
         _put_ocr_cache(content_hash, cleaned, raw_for_title, extraction_method)
+        if "vbu.ac.in" in (pdf_url or "").lower():
+            print(f"[VBU-PDF-READ-OK] method={extraction_method} chars={len(cleaned)} url={pdf_url[:180]}", file=sys.stderr)
+    elif "vbu.ac.in" in (pdf_url or "").lower():
+        print(f"[VBU-PDF-READ-EMPTY] method={extraction_method} raw_chars={len(raw_text)} url={pdf_url[:180]}", file=sys.stderr)
     return (content, cleaned, extraction_method != "plumber", extraction_method, raw_for_title)
 
 
