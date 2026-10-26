@@ -1,3 +1,4 @@
+
 {
   "scan": {
     "request_timeout_seconds": 60,
@@ -520,4 +521,4 @@
       "diagnostics": true
     }
   ]
-    }
+}
