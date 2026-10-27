@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Advanced date/revision review + final PDF dedup guard + undated old-batch send gate (2026-10-27)
 import base64
 import hashlib
 import html
@@ -120,6 +121,7 @@ _RUNTIME_PDF_CACHE_MAX_BYTES = max(1 * 1024 * 1024, int(os.getenv("RUNTIME_PDF_C
 _RUNTIME_PDF_CACHE_BYTES = 0
 
 def _cache_put(key, content):
+    # Required by both PDF processing and Telegram PDF attachment delivery.
     """Store PDF bytes in a bounded FIFO cache; never let cache errors break a notice run."""
     global _RUNTIME_PDF_CACHE_BYTES
     if not key or not isinstance(content, (bytes, bytearray, memoryview)):
@@ -2294,12 +2296,24 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
         newest_pdf_date = max(pdf_dates) if pdf_dates else None
         newest_pdf_session_end = max(pdf_session_ends) if pdf_session_ends else None
         actionable_future = _has_current_actionable_reference(normalized_pdf_full, now)
+        revision_signal = bool(re.search(
+            r"corrigendum|revised|revision|amended|amendment|addendum|extension|extended|"
+            r"date extended|last date|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अवधि बढ़ाई",
+            f"{normalized_title}\\n{session_source}", re.I
+        ))
+        current_year = now.year
+        revision_has_current_year = bool(re.search(
+            rf"(?<!\\d){current_year}(?!\\d)",
+            f"{normalized_title}\\n{session_source}"
+        ))
 
-        # An old issue date can still describe a currently actionable event.
-        # Preserve it for content classification/review, but never use a random
-        # upcoming-event/copyright year as the notice issue date.
-        if newest_pdf_date and newest_pdf_date < cutoff and actionable_future:
-            print("[DATE-REVIEW] Old issue date plus current/future actionable reference; retain for content verification", file=sys.stderr)
+        # A current/future actionable event or a specifically identified
+        # current-year revision is retained for classification, not auto-sent.
+        if newest_pdf_date and newest_pdf_date < cutoff and (
+            actionable_future or (revision_signal and revision_has_current_year)
+        ):
+            reason = "current/future actionable reference" if actionable_future else "current-year revision signal"
+            print(f"[DATE-REVIEW] Old issue date plus {reason}; retain for content verification", file=sys.stderr)
             return False
 
         if newest_pdf_date or newest_pdf_session_end:
@@ -2391,6 +2405,21 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
         r'\b(?:batch|session)\s*[:\-]?\s*\d{2,4}|\b20\d{2}\s*[-/–—]\s*(?:20)?\d{2,4}\b',
         normalized_title, re.I
     ))
+    # A batch/session year is not the publication date. If the PDF was read
+    # but no credible issue date was found, retain it for content classification
+    # and log the uncertainty. Do not let the HTML upload date prove PDF freshness.
+    if strict_pdf_date and normalized_pdf_full.strip() and not _extract_document_dates(normalized_pdf_full):
+        batch_years = [
+            int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_title)
+        ]
+        old_batch_years = [y for y in batch_years if y < now.year - OLD_YEAR_HINT_YEARS_BACK]
+        if batch_session_signal and old_batch_years:
+            print(
+                f"[DATE-REVIEW] PDF has no credible issue date; old batch/session year(s) "
+                f"{sorted(set(old_batch_years))}; retain for content classification, not auto-send",
+                file=sys.stderr
+            )
+
     if not batch_session_signal:
         years = [int(year) for year in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_full)]
         if years:
@@ -2403,6 +2432,54 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
             except (ValueError, OverflowError): pass
 
     return False
+
+
+def _needs_undated_old_batch_review(title, pdf_text, now=None):
+    """
+    Return True when a readable PDF has an old batch/session year but no
+    credible document date. Such items are held for review/retry, not sent
+    automatically and not permanently marked stale.
+    """
+    now = now or datetime.now(timezone.utc)
+    title_text = str(title or "").translate(_DEVA_DIGIT_TRANS)
+    pdf = str(pdf_text or "").translate(_DEVA_DIGIT_TRANS)
+    if not pdf.strip():
+        return False
+
+    # Credible dates extracted from the document mean normal date rules apply.
+    try:
+        if _extract_document_dates(pdf):
+            return False
+    except Exception:
+        pass
+
+    combined_head = f"{title_text}\n" + "\n".join(pdf.splitlines()[:35])[:3500]
+    years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", title_text)]
+    old_batch_years = [y for y in years if y < now.year - OLD_YEAR_HINT_YEARS_BACK]
+    batch_signal = bool(re.search(
+        r"\b(?:batch|session|semester|backlog|old\s+batch|प्रवेश\s+सत्र|बैच|सत्र)\b",
+        title_text, re.I
+    ))
+    if not (batch_signal and old_batch_years):
+        return False
+
+    # Exception only for a clearly signalled revision carrying the current year,
+    # or an explicitly actionable future deadline/event in the PDF text.
+    revision_signal = bool(re.search(
+        r"corrigendum|revised|revision|amended|amendment|addendum|extension|extended|"
+        r"date extended|last date|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अवधि बढ़ाई",
+        combined_head, re.I
+    ))
+    current_year = now.year
+    revision_current_year = bool(
+        revision_signal and re.search(rf"(?<!\d){current_year}(?!\d)", combined_head)
+    )
+    try:
+        actionable_future = _has_current_actionable_reference(pdf, now)
+    except Exception:
+        actionable_future = False
+
+    return not (revision_current_year or actionable_future)
 
 
 def _classify_stale_reason(title, context, url, upload_date=None, pdf_text=None):
@@ -3607,10 +3684,8 @@ def _extract_pdf_title_and_summary(raw_pdf_text, fallback_title=""):
 
 
 def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
-    global _RUNTIME_PDF_CACHE
-    if pdf_url in _RUNTIME_PDF_CACHE:
-        content = _RUNTIME_PDF_CACHE[pdf_url]
-    else:
+    content = _cache_get(pdf_url)
+    if content is None:
         try:
             session = make_session()
             content, actual_url, method = _download_with_pdf_resolution(session, pdf_url, timeout, verify_ssl=verify_ssl)
@@ -4058,7 +4133,7 @@ def _build_pdf_caption(full_message, classification):
 def send_notification_with_pdf(token, chat_id, record, full_message):
     pdf_url = record.get("url", "")
     filename = _safe_filename(pdf_url)
-    pdf_bytes = _RUNTIME_PDF_CACHE.get(pdf_url)
+    pdf_bytes = _cache_get(pdf_url)
     if pdf_bytes is None:
         try:
             session = make_session()
@@ -4617,6 +4692,18 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
                     record["last_error"] = f"PDF content stale (limit={STALE_NOTICE_DAYS}d or old year)"
                     print(f"[STALE-PDF] Suppressed old PDF notice: {record.get('url','')[:80]}", file=sys.stderr)
                     continue
+                if _needs_undated_old_batch_review(effective_title, text):
+                    record["status"] = "pending"
+                    record["classification"] = None
+                    record["summary"] = ""
+                    record["last_error"] = "Date review required: readable PDF has old batch/session year but no credible issue date"
+                    add_review_item(state, record, "undated_old_batch_requires_review")
+                    print(
+                        f"[DATE-REVIEW-HOLD] Not auto-sent: old batch/session and no credible PDF issue date: "
+                        f"{str(effective_title)[:90]}",
+                        file=sys.stderr
+                    )
+                    continue
 
 
 def _parse_upload_date(raw):
@@ -5162,6 +5249,20 @@ def main():
         # Do not send ordinary HTML pages as Telegram notices. The HTML is still
         # scanned and used for discovery/classification, but delivery requires a
         # separately discovered PDF/image whose contents were actually read.
+        effective_title_for_date_gate = record.get("explicit_title") or record.get("title", "")
+        if _needs_undated_old_batch_review(effective_title_for_date_gate, record.get("pdf_text", "")):
+            record["status"] = "pending"
+            record["classification"] = None
+            record["summary"] = ""
+            record["last_error"] = "Delivery blocked: old batch/session in undated PDF requires date review"
+            add_review_item(state, record, "undated_old_batch_requires_review_before_send")
+            print(
+                f"[DATE-REVIEW-HOLD] Delivery blocked before Telegram: "
+                f"{str(effective_title_for_date_gate)[:90]}",
+                file=sys.stderr
+            )
+            continue
+
         attachment_ok, attachment_reason = _attachment_verification_gate(record)
         if not attachment_ok:
             if attachment_reason == "plain_html_without_pdf_or_image_attachment":
@@ -5185,6 +5286,22 @@ def main():
             record["status"] = "permanent_error"
             record["last_error"] = "Configured site no longer exists"
             continue
+        # Last-chance fingerprinting before delivery: if PDF bytes are cached
+        # but an earlier stage did not persist a hash, still run cross-URL dedup.
+        if not record.get("pdf_hash") and (
+            record.get("is_pdf") or is_pdf(str(record.get("url", ""))) or
+            _looks_like_pdf_url(str(record.get("url", "")))
+        ):
+            cached_bytes = _cache_get(str(record.get("url", "")))
+            if cached_bytes:
+                try:
+                    fp = _pdf_content_fingerprint(cached_bytes)
+                    if fp:
+                        record["pdf_hash"] = fp
+                        record["pdf_hash_kind"] = fp.split(":", 1)[0]
+                except Exception as exc:
+                    print(f"[WARN] Final PDF fingerprint retry failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
         duplicate_title = _is_duplicate_by_pdf_hash(state, record, exclude_iid=iid)
         if duplicate_title:
             print(f"[DEDUP-HASH] {record.get('title', '')[:60]} matches sent notice: {duplicate_title[:60]}", file=sys.stderr)
