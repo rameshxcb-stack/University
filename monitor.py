@@ -116,6 +116,49 @@ STRONG_KEYWORDS = [
 _DEVA_DIGIT_TRANS = str.maketrans("०१२३४५६७८९", "0123456789")
 _RUNTIME_PDF_CACHE: Dict[str, bytes] = {}
 _RUNTIME_PDF_CACHE_LOCK = threading.Lock()
+_RUNTIME_PDF_CACHE_MAX_BYTES = max(1 * 1024 * 1024, int(os.getenv("RUNTIME_PDF_CACHE_MAX_BYTES", str(80 * 1024 * 1024))))
+_RUNTIME_PDF_CACHE_BYTES = 0
+
+def _cache_put(key, content):
+    """Store PDF bytes in a bounded FIFO cache; never let cache errors break a notice run."""
+    global _RUNTIME_PDF_CACHE_BYTES
+    if not key or not isinstance(content, (bytes, bytearray, memoryview)):
+        return
+    value = bytes(content)
+    size = len(value)
+    if size <= 0 or size > _RUNTIME_PDF_CACHE_MAX_BYTES:
+        return
+    try:
+        with _RUNTIME_PDF_CACHE_LOCK:
+            old_value = _RUNTIME_PDF_CACHE.pop(key, None)
+            if old_value is not None:
+                _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(old_value))
+            while _RUNTIME_PDF_CACHE and _RUNTIME_PDF_CACHE_BYTES + size > _RUNTIME_PDF_CACHE_MAX_BYTES:
+                _old_key = next(iter(_RUNTIME_PDF_CACHE))
+                _old = _RUNTIME_PDF_CACHE.pop(_old_key, None)
+                if _old is not None:
+                    _RUNTIME_PDF_CACHE_BYTES = max(0, _RUNTIME_PDF_CACHE_BYTES - len(_old))
+            _RUNTIME_PDF_CACHE[key] = value
+            _RUNTIME_PDF_CACHE_BYTES += size
+    except Exception as exc:
+        print(f"[WARN] PDF cache write skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+def _cache_get(key):
+    """Return cached PDF bytes or None; a cache miss must never fail the monitor."""
+    if not key:
+        return None
+    try:
+        with _RUNTIME_PDF_CACHE_LOCK:
+            return _RUNTIME_PDF_CACHE.get(key)
+    except Exception as exc:
+        print(f"[WARN] PDF cache read skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+def _cache_clear():
+    global _RUNTIME_PDF_CACHE_BYTES
+    with _RUNTIME_PDF_CACHE_LOCK:
+        _RUNTIME_PDF_CACHE.clear()
+        _RUNTIME_PDF_CACHE_BYTES = 0
 _OCR_CONTENT_CACHE: Dict[str, Tuple[str, str, str]] = {}
 _OCR_CONTENT_CACHE_MAX_ITEMS = 30
 _OCR_CONTENT_LOCK = threading.Lock()
@@ -154,8 +197,866 @@ _JS_REQUIRED_MARKERS = ('<div id="root"', '<div id="app"', '<div id="__next"', '
 _JS_PDF_VIEWER_MARKERS = ("pdfjs", "pdf.js", "pdfobject", "viewer.html", "docs.google.com/viewer", "drive.google.com/file", "googleusercontent.com/viewer", "pdfjs-viewer", "web/viewer.html")
 
 _NOTICE_KEYWORDS = [
-    "notice", "notification", "announcement", "circular", "advertisement", "publicity", "exam", "examination", "result", "admit", "form", "tender", "quotation", "bid", "rfp", "eoi", "nit", "recruitment", "vacancy", "appointment", "interview", "apprentice", "syllabus", "curriculum", "date sheet", "date extended", "last date", "due date", "exam date", "schedule", "timetable", "time-table", "time table", "calendar", "fee", "payment", "challan", "merit", "marksheet", "score", "grade", "cgpa", "gpa", "scholarship", "counselling", "counseling", "migration", "certificate", "transcript", "bonafide", "provisional", "registration", "enrollment", "enrolment", "convocation", "placement", "hostel", "prospectus", "semester", "revaluation", "rechecking", "internship", "eligibility", "qualification",
-    "सूचना", "अधिसूचना", "विज्ञापन", "नोटिस", "परीक्षा", "परीक्षा कार्यक्रम", "परीक्षा केंद्र", "परिणाम", "रिजल्ट", "प्रवेश", "प्रवेश पत्र", "भर्ती", "नियुक्ति", "साक्षात्कार", "रिक्त पद", "निविदा", "कोटेशन", "छात्रवृत्ति", "शुल्क", "पाठ्यक्रम", "समय सारिणी", "समय", "कैलेंडर", "मेरिट", "अंकतालिका", "काउंसलिंग", "माइग्रेशन", "प्रमाण पत्र", "पंजीकरण", "नामांकन", "दीक्षांत", "पुनर्मूल्यांकन", "सेमेस्टर", "प्लेसमेंट", "छात्रावास",
+    'notice',
+    'notification',
+    'announcement',
+    'circular',
+    'advertisement',
+    'publicity',
+    'exam',
+    'examination',
+    'result',
+    'admit',
+    'form',
+    'tender',
+    'quotation',
+    'bid',
+    'rfp',
+    'eoi',
+    'nit',
+    'recruitment',
+    'vacancy',
+    'appointment',
+    'interview',
+    'apprentice',
+    'syllabus',
+    'curriculum',
+    'date sheet',
+    'date extended',
+    'last date',
+    'due date',
+    'exam date',
+    'schedule',
+    'timetable',
+    'time-table',
+    'time table',
+    'calendar',
+    'fee',
+    'payment',
+    'challan',
+    'merit',
+    'marksheet',
+    'score',
+    'grade',
+    'cgpa',
+    'gpa',
+    'scholarship',
+    'counselling',
+    'counseling',
+    'migration',
+    'certificate',
+    'transcript',
+    'bonafide',
+    'provisional',
+    'registration',
+    'enrollment',
+    'enrolment',
+    'convocation',
+    'placement',
+    'hostel',
+    'prospectus',
+    'semester',
+    'revaluation',
+    'rechecking',
+    'internship',
+    'eligibility',
+    'qualification',
+    'सूचना',
+    'अधिसूचना',
+    'विज्ञापन',
+    'नोटिस',
+    'परीक्षा',
+    'परीक्षा कार्यक्रम',
+    'परीक्षा केंद्र',
+    'परिणाम',
+    'रिजल्ट',
+    'प्रवेश',
+    'प्रवेश पत्र',
+    'भर्ती',
+    'नियुक्ति',
+    'साक्षात्कार',
+    'रिक्त पद',
+    'निविदा',
+    'कोटेशन',
+    'छात्रवृत्ति',
+    'शुल्क',
+    'पाठ्यक्रम',
+    'समय सारिणी',
+    'समय',
+    'कैलेंडर',
+    'मेरिट',
+    'अंकतालिका',
+    'काउंसलिंग',
+    'माइग्रेशन',
+    'प्रमाण पत्र',
+    'पंजीकरण',
+    'नामांकन',
+    'दीक्षांत',
+    'पुनर्मूल्यांकन',
+    'सेमेस्टर',
+    'प्लेसमेंट',
+    'छात्रावास',
+    'notices',
+    'circulars',
+    'public notice',
+    'press release',
+    'office order',
+    'office memorandum',
+    'memo',
+    'ordinance',
+    'resolution',
+    'gazette',
+    'erratum',
+    'addendum',
+    'last date extended',
+    'deadline',
+    'important notice',
+    'urgent notice',
+    'latest notice',
+    'official notice',
+    'notification regarding',
+    'notice regarding',
+    'guidelines',
+    'instructions',
+    'clarification',
+    'withdrawal',
+    'cancellation',
+    'postponed',
+    'postponement',
+    'rescheduled',
+    'deferred',
+    'revised schedule',
+    'public information',
+    'university examination',
+    'annual examination',
+    'semester examination',
+    'term-end examination',
+    'mid semester',
+    'mid-semester',
+    'end semester',
+    'end-semester',
+    'internal examination',
+    'external examination',
+    'theory examination',
+    'practical examination',
+    'written examination',
+    'oral examination',
+    'exam form',
+    'examination form',
+    'form fill-up',
+    'form fill up',
+    'exam fee',
+    'examination fee',
+    'exam centre',
+    'exam center',
+    'centre list',
+    'center list',
+    'centre change',
+    'center change',
+    'exam routine',
+    'examination schedule',
+    'exam programme',
+    'exam program',
+    'datesheet',
+    'routine',
+    'exam instructions',
+    'exam guidelines',
+    'exam postponed',
+    'exam cancelled',
+    'exam rescheduled',
+    'special examination',
+    'back paper',
+    'back examination',
+    'backlog examination',
+    'repeat examination',
+    'supplementary examination',
+    'compartment examination',
+    'improvement examination',
+    'special back examination',
+    'scrutiny',
+    're-checking',
+    're-evaluation',
+    'answer script',
+    'answer book',
+    'copy of answer sheet',
+    'photocopy of answer sheet',
+    'challenge evaluation',
+    'exam attendance',
+    'absentee',
+    'absentee list',
+    'unfair means',
+    'malpractice',
+    'exam duty',
+    'invigilator',
+    'invigilation',
+    'examination department',
+    'controller of examinations',
+    'coe',
+    'result notification',
+    'result declared',
+    'result published',
+    'provisional result',
+    'final result',
+    'revised result',
+    'withheld result',
+    'result withheld',
+    'marks',
+    'mark sheet',
+    'marks statement',
+    'grade card',
+    'grade sheet',
+    'score card',
+    'scorecard',
+    'percentage',
+    'division',
+    'pass list',
+    'fail list',
+    'qualified list',
+    'successful candidates',
+    'provisional merit list',
+    'final merit list',
+    'waitlist',
+    'rank list',
+    'rank card',
+    'cut off',
+    'cutoff',
+    'cut-off marks',
+    'provisional answer key',
+    'final answer key',
+    'model answer',
+    'objection window',
+    'objection against answer key',
+    'admit cards',
+    'entry ticket',
+    'exam ticket',
+    'exam identity card',
+    'registration slip',
+    'attendance sheet',
+    'exam permission',
+    'permission letter',
+    'exam authorization',
+    'candidate list',
+    'eligible candidates',
+    'ineligible candidates',
+    'rejected candidates',
+    'application status',
+    'exam application status',
+    'new admission',
+    'fresh admission',
+    're-admission',
+    'readmission',
+    'online registration',
+    'application form',
+    'application submission',
+    'application deadline',
+    'admission schedule',
+    'admission guidelines',
+    'admission counselling',
+    'seat allotment',
+    'allotment list',
+    'seat matrix',
+    'vacant seats',
+    'spot admission',
+    'mop-up round',
+    'mop up round',
+    'waiting list admission',
+    'document verification',
+    'certificate verification',
+    'physical verification',
+    'entrance test',
+    'entrance examination',
+    'entrance exam',
+    'entrance result',
+    'entrance admit card',
+    'entrance answer key',
+    'eligibility criteria',
+    'eligibility list',
+    'provisional admission',
+    'admission cancellation',
+    'fee refund',
+    'transfer certificate',
+    'character certificate',
+    'academic schedule',
+    'academic session',
+    'academic year',
+    'commencement of classes',
+    'class commencement',
+    'classes begin',
+    'class routine',
+    'class timetable',
+    'course registration',
+    'course structure',
+    'course curriculum',
+    'revised syllabus',
+    'course outline',
+    'course code',
+    'paper code',
+    'credit system',
+    'credit framework',
+    'credit transfer',
+    'academic regulations',
+    'academic ordinance',
+    'learning outcomes',
+    'internal assessment',
+    'continuous assessment',
+    'assignment',
+    'assignments',
+    'project submission',
+    'field work',
+    'fieldwork',
+    'industrial training',
+    'skill enhancement',
+    'value added course',
+    'add-on course',
+    'certificate course',
+    'diploma course',
+    'open elective',
+    'minor course',
+    'major course',
+    'multidisciplinary course',
+    'department notice',
+    'departmental notice',
+    'class suspension',
+    'class postponed',
+    'class rescheduled',
+    'holiday notice',
+    'working days',
+    'teaching days',
+    'academic audit',
+    'undergraduate',
+    'postgraduate',
+    'under graduate',
+    'post graduate',
+    'fyug',
+    'cbl',
+    'semester-i',
+    'semester-ii',
+    'semester-iii',
+    'semester-iv',
+    'semester-v',
+    'semester-vi',
+    'semester-vii',
+    'semester-viii',
+    '1st semester',
+    '2nd semester',
+    '3rd semester',
+    '4th semester',
+    '5th semester',
+    '6th semester',
+    '7th semester',
+    '8th semester',
+    'first semester',
+    'second semester',
+    'third semester',
+    'fourth semester',
+    'fifth semester',
+    'sixth semester',
+    'honours',
+    'hons',
+    'general course',
+    'pass course',
+    'b.a.',
+    'ba',
+    'b.sc.',
+    'bsc',
+    'b.com.',
+    'bcom',
+    'b.c.a.',
+    'bca',
+    'b.b.a.',
+    'bba',
+    'b.ed.',
+    'bed',
+    'b.tech',
+    'btech',
+    'b.pharm',
+    'll.b',
+    'llb',
+    'm.a.',
+    'ma',
+    'm.sc.',
+    'msc',
+    'm.com.',
+    'mcom',
+    'm.c.a.',
+    'mca',
+    'm.ed.',
+    'med',
+    'm.tech',
+    'mtech',
+    'm.pharm',
+    'mba',
+    'm.lib',
+    'mlis',
+    'blis',
+    'b.h.m.s.',
+    'bhms',
+    'bds',
+    'mbbs',
+    'md',
+    'ms',
+    'm.phil',
+    'mphil',
+    'practical exam',
+    'practical routine',
+    'practical schedule',
+    'lab examination',
+    'laboratory examination',
+    'viva voce',
+    'oral test',
+    'project viva',
+    'project evaluation',
+    'thesis submission',
+    'synopsis',
+    'research project',
+    'field study',
+    'internship report',
+    'industrial visit',
+    'clinical posting',
+    'clinical examination',
+    'teaching practice',
+    'lesson plan',
+    'project presentation',
+    'workshop',
+    'seminar',
+    'conference',
+    'symposium',
+    'presentation',
+    'demonstration',
+    'portfolio submission',
+    'research scholar',
+    'research scholars',
+    'phd admission',
+    'ph.d admission',
+    'phd entrance',
+    'phd registration',
+    'phd coursework',
+    'coursework examination',
+    'research entrance test',
+    'research proposal',
+    'research committee',
+    'doctoral committee',
+    'doctoral research',
+    'supervisor allocation',
+    'guide allocation',
+    'research supervisor',
+    'vacancy for phd',
+    'research fellowship',
+    'fellowship application',
+    'jrf',
+    'srf',
+    'csir-net',
+    'ugc-net',
+    'research assistant',
+    'project fellow',
+    'postdoctoral',
+    'post doctoral',
+    'thesis evaluation',
+    'pre-submission seminar',
+    'open defence',
+    'open defense',
+    'viva voce examination',
+    'plagiarism',
+    'ethics committee',
+    'research methodology',
+    'patent',
+    'publication',
+    'research funding',
+    'minor research project',
+    'major research project',
+    'seed grant',
+    'recruitment notification',
+    'job notification',
+    'career',
+    'careers',
+    'employment notice',
+    'staff recruitment',
+    'faculty recruitment',
+    'teaching post',
+    'non-teaching post',
+    'teaching staff',
+    'non-teaching staff',
+    'assistant professor',
+    'associate professor',
+    'professor',
+    'guest faculty',
+    'guest teacher',
+    'visiting faculty',
+    'contractual appointment',
+    'temporary appointment',
+    'permanent appointment',
+    'walk in interview',
+    'interview schedule',
+    'shortlisted candidates',
+    'shortlisting',
+    'selection process',
+    'written test',
+    'skill test',
+    'demo class',
+    'appointment letter',
+    'joining letter',
+    'joining instructions',
+    'joining date',
+    'provisional selection',
+    'final selection',
+    'waiting panel',
+    'panel list',
+    'merit panel',
+    'apprenticeship',
+    'internship vacancy',
+    'pay scale',
+    'age limit',
+    'reservation roster',
+    'application fee',
+    'application correction',
+    'extension of deadline',
+    'tenders',
+    'etender',
+    'request for quotation',
+    'rfq',
+    'request for proposal',
+    'expression of interest',
+    'notice inviting tender',
+    'tender document',
+    'tender fee',
+    'earnest money deposit',
+    'procurement',
+    'purchase notice',
+    'supply order',
+    'work order',
+    'rate contract',
+    'vendor registration',
+    'contract award',
+    'corrigendum tender',
+    'tender extension',
+    'e-auction',
+    'disposal',
+    'scrap sale',
+    'quotation invitation',
+    'pre-bid meeting',
+    'bid opening',
+    'technical evaluation',
+    'financial opening',
+    'purchase committee',
+    'gem portal',
+    'scholarships',
+    'scholarship application',
+    'scholarship renewal',
+    'scholarship verification',
+    'post matric scholarship',
+    'post-matric scholarship',
+    'pre matric scholarship',
+    'merit scholarship',
+    'financial assistance',
+    'financial aid',
+    'student aid',
+    'stipend payment',
+    'education loan',
+    'fee concession',
+    'fee waiver',
+    'fee reimbursement',
+    'tuition fee',
+    'national scholarship portal',
+    'nsp',
+    'e-kalyan',
+    'ekalyan',
+    'minority scholarship',
+    'sc scholarship',
+    'st scholarship',
+    'obc scholarship',
+    'ews scholarship',
+    'divyang scholarship',
+    'disability assistance',
+    'student welfare',
+    'student support',
+    'student grievance',
+    'grievance redressal',
+    'anti-ragging',
+    'anti ragging',
+    'equal opportunity',
+    'counselling centre',
+    'mental health support',
+    'women cell',
+    'internal complaints committee',
+    'sexual harassment prevention',
+    'gender sensitization',
+    'hostel admission',
+    'hostel allotment',
+    'hostel fee',
+    'hostel vacancy',
+    'hostel application',
+    'hostel list',
+    'mess fee',
+    'mess menu',
+    'library notice',
+    'library membership',
+    'library clearance',
+    'no dues',
+    'id card',
+    'bus service',
+    'transport',
+    'parking',
+    'campus facility',
+    'sports trial',
+    'sports selection',
+    'cultural event',
+    'youth festival',
+    'student union',
+    'student election',
+    'campus placement',
+    'placement drive',
+    'pre-placement talk',
+    'training and placement',
+    'alumni registration',
+    'degree distribution',
+    'degree certificate',
+    'provisional certificate',
+    'duplicate certificate',
+    'certificate collection',
+    'medium certificate',
+    'no objection certificate',
+    'noc',
+    'verification of degree',
+    'vice chancellor',
+    'pro vice chancellor',
+    'registrar',
+    'deputy registrar',
+    'assistant registrar',
+    'finance officer',
+    'dean',
+    'dean of students welfare',
+    'head of department',
+    'hod',
+    'department head',
+    'academic council',
+    'executive council',
+    'syndicate',
+    'senate',
+    'board of studies',
+    'faculty board',
+    'selection committee',
+    'meeting notice',
+    'meeting agenda',
+    'minutes of meeting',
+    'committee constituted',
+    'committee notification',
+    'nomination',
+    'charge handover',
+    'administrative order',
+    'delegation of powers',
+    'statute',
+    'regulation',
+    'rules and regulations',
+    'working hours',
+    'office hours',
+    'office closed',
+    'office reopening',
+    'administrative closure',
+    'public holiday',
+    'local holiday',
+    'national holiday',
+    'holiday list',
+    'restricted holiday',
+    'gazetted holiday',
+    'affiliation',
+    'affiliated college',
+    'college affiliation',
+    'affiliation renewal',
+    'recognition',
+    'approval',
+    'accreditation',
+    'naac',
+    'nba',
+    'ugc',
+    'aicte',
+    'ncte',
+    'pci',
+    'bci',
+    'inc',
+    'mci',
+    'nmc',
+    'inspection',
+    'inspection schedule',
+    'compliance',
+    'compliance report',
+    'mandatory disclosure',
+    'annual report',
+    'annual return',
+    'aishe',
+    'institutional data',
+    'iqac',
+    'quality assurance',
+    'internal quality assurance cell',
+    'iqac meeting',
+    'green audit',
+    'gender audit',
+    'energy audit',
+    'statutory committee',
+    'policy document',
+    'self study report',
+    'ssr',
+    'data validation',
+    'affiliation application',
+    'event',
+    'events',
+    'upcoming event',
+    'webinar',
+    'guest lecture',
+    'lecture series',
+    'invited talk',
+    'training programme',
+    'training program',
+    'orientation programme',
+    'orientation program',
+    'induction programme',
+    'induction program',
+    'refresher course',
+    'faculty development programme',
+    'faculty development program',
+    'fdp',
+    'short term course',
+    'capacity building',
+    'awareness programme',
+    'awareness program',
+    'quiz competition',
+    'essay competition',
+    'debate competition',
+    'poster competition',
+    'paper presentation',
+    'call for papers',
+    'call for abstracts',
+    'registration deadline',
+    'event registration',
+    'participation certificate',
+    'convocation ceremony',
+    'foundation day',
+    'annual day',
+    'sports meet',
+    'cultural fest',
+    'fest',
+    'celebration',
+    'commemoration',
+    'memorial lecture',
+    'national conference',
+    'international conference',
+    'सूचनाएँ',
+    'अधिसूचनाएँ',
+    'आधिकारिक सूचना',
+    'महत्वपूर्ण सूचना',
+    'अत्यावश्यक सूचना',
+    'सार्वजनिक सूचना',
+    'कार्यालय आदेश',
+    'अध्यादेश',
+    'संकल्प',
+    'त्रुटि सुधार',
+    'अंतिम तिथि बढ़ाई',
+    'समय सीमा',
+    'परीक्षा स्थगित',
+    'परीक्षा रद्द',
+    'परीक्षा पुनर्निर्धारित',
+    'परीक्षा प्रपत्र',
+    'परीक्षा फॉर्म',
+    'उत्तरमाला',
+    'अंकपत्र',
+    'अंकसूची',
+    'अंक विवरण',
+    'श्रेणी सूची',
+    'पुनर्गणना',
+    'पुनर्जांच',
+    'पूरक परीक्षा',
+    'विशेष परीक्षा',
+    'बैक पेपर',
+    'बैकलॉग परीक्षा',
+    'पुनः नामांकन',
+    'सीट आवंटन',
+    'दस्तावेज सत्यापन',
+    'शैक्षणिक सत्र',
+    'कक्षा संचालन',
+    'कक्षा स्थगित',
+    'कक्षा समय सारिणी',
+    'आंतरिक मूल्यांकन',
+    'प्रायोगिक परीक्षा',
+    'मौखिक परीक्षा',
+    'शोधार्थी',
+    'शोध प्रस्ताव',
+    'शोध प्रबंध',
+    'शोध निर्देशक',
+    'वित्तीय सहायता',
+    'शुल्क माफी',
+    'शुल्क वापसी',
+    'छात्रावास आवंटन',
+    'गैर-शिक्षण कर्मचारी',
+    'अभिरुचि की अभिव्यक्ति',
+    'कार्यादेश',
+    'नीलामी',
+    'उपाधि वितरण',
+    'छात्र कल्याण',
+    'शिकायत निवारण',
+    'रैगिंग निषेध',
+    'महाविद्यालय संबद्धता',
+    'मान्यता',
+    'निरीक्षण',
+    'अनुपालन रिपोर्ट',
+    'संगोष्ठी',
+    'सम्मेलन',
+    'वेबिनार',
+    'प्रशिक्षण कार्यक्रम',
+    'अभिमुखीकरण',
+    'प्रवेश परीक्षा',
+    'प्रवेश परीक्षा परिणाम',
+    'कार्यालय बंद',
+    'कार्यालय खुलने',
+    'विश्वविद्यालय प्रशासन',
+    'कुलपति',
+    'कुलसचिव',
+    'परीक्षा नियंत्रक',
+    'विभागाध्यक्ष',
+    'अधिष्ठाता',
+    'शैक्षणिक परिषद',
+    'कार्यकारी परिषद',
+    'बैठक सूचना',
+    'कार्यसूची',
+    'कार्यवृत्त',
+    'समिति गठन',
+    'आंतरिक शिकायत समिति',
+    'महिला प्रकोष्ठ',
+    'मान्यता प्राप्त',
+    'संबद्धता नवीनीकरण',
+    'exam form fill up',
+    'semester form fill-up',
+    'ug admission',
+    'pg admission',
+    'fyugp semester',
+    'sem exam',
+    'sem result',
+    'admission merit list',
+    'provisional admission list',
+    'revised exam routine',
+    'practical exam routine',
+    'exam form date extended',
+    'admission date extended',
+    'convocation registration',
+    'degree certificate application',
+    'college notice',
+    'university notice',
+    'notice for students',
+    'student notification',
+    'सूचना जारी',
+    'नोटिस जारी',
+    'परीक्षा फॉर्म भरना',
+    'फॉर्म भरने की तिथि',
+    'तिथि में विस्तार',
+    'नामांकन की अंतिम तिथि',
+    'परीक्षा फॉर्म की अंतिम तिथि',
+    'परिणाम जारी',
+    'रिजल्ट जारी',
+    'प्रवेश शुरू',
+    'नामांकन शुरू',
+    'आवेदन आमंत्रित',
+    'आवेदन की अंतिम तिथि',
+    'सूची जारी',
+    'कार्यक्रम जारी',
+    'परीक्षा रूटीन जारी',
 ]
 
 
@@ -213,25 +1114,15 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
                 context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=bool(ignore_https_errors), extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
-                page_errors = []
-                page.on("pageerror", lambda exc: page_errors.append(str(exc)[:180]))
-                nav_response = None
-                try:
-                    nav_response = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-                except Exception as first_nav_exc:
-                    try:
-                        nav_response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    except Exception as exc:
-                        return None, url, f"playwright_nav_error:{type(exc).__name__}; first={type(first_nav_exc).__name__}:{str(first_nav_exc)[:180]}"
+                try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                except Exception:
+                    try: page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except Exception as exc: return None, url, f"playwright_nav_error:{type(exc).__name__}"
                 try: page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms))
                 except Exception: pass
-                selector_result = "not_configured"
                 if selector:
-                    try:
-                        page.wait_for_selector(selector, state="attached", timeout=min(selector_timeout_ms, timeout_ms))
-                        selector_result = "matched"
-                    except Exception as selector_exc:
-                        selector_result = f"timeout_or_invalid:{type(selector_exc).__name__}"
+                    try: page.wait_for_selector(selector, state="attached", timeout=min(selector_timeout_ms, timeout_ms))
+                    except Exception: pass
                 if wait_after_ms:
                     try: page.wait_for_timeout(wait_after_ms)
                     except Exception: pass
@@ -255,19 +1146,7 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
                 if html_content:
                     global _JS_RENDER_COUNT
                     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT += 1
-                try:
-                    page_title = (page.title() or "")[:100]
-                    body_chars = len(page.locator("body").inner_text(timeout=3000))
-                    anchor_count = page.locator("a").count()
-                    href_count = page.locator("a[href]").count()
-                    ng_href_count = page.locator("a[ng-href]").count()
-                except Exception:
-                    page_title, body_chars, anchor_count, href_count, ng_href_count = "", -1, -1, -1, -1
-                http_status = nav_response.status if nav_response is not None else "no_navigation_response"
-                method = (f"playwright_ok:http={http_status};selector={selector_result};title={page_title};"
-                          f"body_chars={body_chars};anchors={anchor_count};href={href_count};ng_href={ng_href_count};"
-                          f"page_errors={len(page_errors)};page_error_sample={' | '.join(page_errors[:2])[:180]}")
-                return html_content, (page.url or url), method
+                return html_content, (page.url or url), "playwright_ok"
             finally:
                 try: browser.close()
                 except Exception: pass
@@ -321,6 +1200,107 @@ def _is_notice_document_url(url):
     try: path = (urlparse(url).path or "").lower()
     except Exception: return False
     return any(hint in path for hint in _NOTICE_DOC_URL_HINTS)
+
+
+def _is_rims_non_notice_url(url):
+    """Return True for known RIMS service/navigation URLs, not official notice pages."""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = _normalize_host(parsed.hostname or "")
+        path = (parsed.path or "").rstrip("/").casefold()
+    except Exception:
+        return False
+    if host != "rimsranchi.ac.in":
+        return False
+    # This is the Online OPD registration service shown on the homepage, not a notice.
+    return path.endswith("/onln_reg_sys.php") or path == "onln_reg_sys.php"
+
+def _looks_like_rims_menu_dump(title, url=""):
+    """Detect RIMS global navigation text while preserving real notice titles."""
+    if not title:
+        return False
+    try:
+        host = _normalize_host(urlparse(str(url or "")).hostname or "")
+    except Exception:
+        host = ""
+    if host != "rimsranchi.ac.in":
+        return False
+    text = re.sub(r"\s+", " ", str(title)).casefold()
+    nav_phrases = (
+        "about us", "an introduction", "director administration",
+        "vice-chancellor", "university vice-chancellor", "rti pio",
+        "citizen charter", "on-going projects", "ongoing projects",
+        "how to reach", "academics", "departments faculty",
+        "admission info", "multidisciplinary", "director",
+    )
+    notice_phrases = (
+        "notification", "office order", "recruitment", "advertisement",
+        "examination", "exam result", "result", "admit card",
+        "tender", "corrigendum", "ph.d", "phd", "provisional",
+        "memo no", "letter no", "dated :", "dated:",
+        "सूचना", "अधिसूचना", "भर्ती", "परीक्षा", "परिणाम", "विज्ञापन",
+    )
+    nav_count = sum(1 for phrase in nav_phrases if phrase in text)
+    has_notice = any(phrase in text for phrase in notice_phrases)
+    return nav_count >= 3 and not has_notice
+
+def _should_suppress_rims_candidate(item):
+    """Suppress service links and navigation dumps, but do not discard notice documents."""
+    if not isinstance(item, dict):
+        return False
+    url = str(item.get("url", "") or "")
+    if _is_rims_non_notice_url(url):
+        return True
+    title = clean_text(str(item.get("explicit_title") or item.get("title") or ""), 500)
+    return bool(_looks_like_rims_menu_dump(title, url) and not _is_notice_document_url(url))
+
+
+def _is_nusrl_non_notice_url(url):
+    """Known NUSRL informational page that was incorrectly emitted as an admission notice."""
+    try:
+        parsed = urlparse(str(url or ""))
+        if (parsed.hostname or "").lower().removeprefix("www.") != "nusrlranchi.ac.in":
+            return False
+        path = (parsed.path or "/").rstrip("/").lower() or "/"
+        return path in {"/about-us", "/about", "/life-at-nusrl", "/campus"}
+    except Exception:
+        return False
+
+
+def _looks_like_nusrl_homepage_dump(title, url=""):
+    """Detect NUSRL homepage carousel/menu text, while retaining genuine notice titles."""
+    text = clean_text(str(title or ""), 700).casefold()
+    if not text:
+        return False
+    if _is_nusrl_non_notice_url(url):
+        return True
+    marketing_markers = (
+        "visit nusrl campus", "life at nusrl", "modern classrooms", 
+        "innovative infrastructure", "read more chevron_right", "chevron_right",
+    )
+    marker_count = sum(1 for marker in marketing_markers if marker in text)
+    has_real_notice_title = any(marker in text for marker in (
+        "provisionally eligible candidates", "walk-in interview", "vacancy notification",
+        "recruitment notice", "recruitment cancellation", "ph.d. admission",
+        "phd interview", "admission notification", "notice regarding", "examination schedule",
+        "circular of appointments", "advertisement for", "call for applications",
+    ))
+    return marker_count >= 2 and not has_real_notice_title
+
+
+def _should_suppress_site_noise(item):
+    """Common filter for known false-positive navigation/service candidates."""
+    if not isinstance(item, dict):
+        return False
+    if _should_suppress_rims_candidate(item):
+        return True
+    url = str(item.get("url", "") or "")
+    if _is_nusrl_non_notice_url(url):
+        return True
+    title = clean_text(str(item.get("explicit_title") or item.get("title") or ""), 700)
+    context = clean_text(str(item.get("context") or ""), 700)
+    combined = f"{title} {context}"
+    return _looks_like_nusrl_homepage_dump(combined, url)
 
 
 def _looks_like_menu_dump(title):
@@ -406,14 +1386,16 @@ def _resolve_title(item):
         if not v: return False
         if v.startswith("http://") or v.startswith("https://"): return False
         return (not _is_generic_title(v) and not _is_language_selector(v)
-                and not _looks_like_menu_dump(v) and not _is_garbage_title(v))
+                and not _looks_like_menu_dump(v) and not _looks_like_rims_menu_dump(v, url)
+                and not _is_garbage_title(v))
     if _ok(explicit): return explicit
     if _ok(anchor): return anchor
     for candidate in (explicit, anchor):
-        if candidate and (_looks_like_menu_dump(candidate) or _is_garbage_title(candidate)):
+        if candidate and (_looks_like_menu_dump(candidate) or _looks_like_rims_menu_dump(candidate, url) or _is_garbage_title(candidate)):
             cleaned = _cleanup_menu_dump_title(candidate, url=url, explicit="")
             if cleaned and cleaned != candidate and _ok(cleaned): return cleaned
-    if context and not _is_generic_title(context) and not _is_language_selector(context) and not _looks_like_menu_dump(context):
+    if (context and not _is_generic_title(context) and not _is_language_selector(context)
+            and not _looks_like_menu_dump(context) and not _looks_like_rims_menu_dump(context, url)):
         if not (context.startswith("http://") or context.startswith("https://")):
             return context[:200]
     slug = _title_from_url(url, min_len=5)
@@ -598,7 +1580,8 @@ def _pdf_content_fingerprint(content):
     return "bytes-v1:" + hashlib.sha256(content).hexdigest()
 
 
-def _html_content_hash(title, context):
+def _legacy_html_content_hash(title, context):
+    """Read-only compatibility hash for HTML notices saved by state schema v33."""
     if not title: return ""
     try:
         norm_title = re.sub(r"\s+", " ", (title or "").strip().casefold())[:200]
@@ -606,6 +1589,24 @@ def _html_content_hash(title, context):
         combined = f"{norm_title}|{norm_context}"
         if len(combined) < 30: return ""
         return "html-v1:" + hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _html_content_hash(title, context="", url=""):
+    """Stable HTML-notice identity: normalized title + canonical URL, never volatile page context."""
+    if not title: return ""
+    try:
+        norm_title = re.sub(r"\s+", " ", (title or "").strip().casefold())[:200]
+        # Strip tracking parameters and normalize URL variants so ?utm_source=... does not
+        # create a new notification identity. Keep meaningful query parameters and SPA routes.
+        norm_url = canonical_identity_url(str(url or "").strip()) if url else ""
+        combined = f"{norm_title}|{norm_url}"
+        # URL-less legacy records fall back to the old content hash to avoid a weak title-only key.
+        if not norm_url:
+            return _legacy_html_content_hash(title, context)
+        if len(norm_title) < 8 or len(norm_url) < 12: return ""
+        return "html-v2:" + hashlib.sha256(combined.encode("utf-8")).hexdigest()
     except Exception:
         return ""
 
@@ -681,6 +1682,8 @@ def _meaningful_metadata_change(old_title, new_title, old_context, new_context):
     old_title_norm = re.sub(r"\s+", " ", (old_title or "").casefold()).strip()
     new_title_norm = re.sub(r"\s+", " ", (new_title or "").casefold()).strip()
     if old_title_norm and old_title_norm == new_title_norm:
+        # Same title: ignore arbitrary context churn (sidebar, ticker, visitor count,
+        # page timestamps). Reprocess only when a known meaningful notice field changes.
         old_fields = extract_meaningful_fields("\n".join([old_title or "", old_context or ""]))
         new_fields = extract_meaningful_fields("\n".join([new_title or "", new_context or ""]))
         return any(old_fields.get(k) != new_fields.get(k) for k in set(old_fields) | set(new_fields))
@@ -862,6 +1865,8 @@ def _is_navigation_url(url):
         if (fragment.startswith("/") or fragment.startswith("!/")) and len(fragment) > 2: return False
         target = (parsed.path or "") + ("?" + parsed.query if parsed.query else "")
     except Exception: return False
+    if _is_rims_non_notice_url(url):
+        return True
     for pat in _NON_NOTICE_URL_PATTERNS:
         if pat.search(target): return True
     return False
@@ -1153,6 +2158,90 @@ def _extract_upload_date(anchor_tag):
     return None
 
 
+
+# Dates on a notice are not interchangeable: copyright years, footer dates,
+# calendars/events mentioned in the body, and academic sessions must not make an
+# old notice appear new. Prefer issue/publication labels, then dates in the
+# document's opening section; deliberately ignore common footer/noise lines.
+_DATE_NOISE_LINE = re.compile(
+    r"copyright|\u00a9|all rights reserved|website last updated|last updated|"
+    r"upcoming event|upcoming events|event calendar|events calendar|"
+    r"designed by|developed by|maintained by|page generated|printed on|"
+    r"visit us|follow us|contact us|\bwebmaster\b|\bfooter\b", re.I)
+_ISSUE_DATE_LABEL = re.compile(
+    r"\b(?:date|dated|date of issue|issued on|notice date|notification date|"
+    r"published on|publication date|effective from|order dated|letter dated)\b|"
+    r"(?:दिनांक|जारी दिनांक|प्रकाशित दिनांक|आदेश दिनांक)\s*[:：\-]?", re.I)
+
+
+def _extract_document_dates(text):
+    """Extract likely issue dates, never treating arbitrary maximum date as issue date.
+
+    Explicit issue labels have priority. Otherwise only the document's opening
+    section is considered and obvious footer/calendar noise is removed. Dates
+    on mixed-content lines are extracted only from the labelled prefix where
+    possible, so a copyright/event year cannot overwrite an older issue date.
+    """
+    if not text:
+        return []
+    raw = str(text).translate(_DEVA_DIGIT_TRANS)
+    raw_lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
+    raw_lines = [line for line in raw_lines if line]
+    labelled = []
+    for line in raw_lines[:100]:
+        # Ignore a line that is itself footer/calendar noise. If issue date and
+        # noise share a line, take only the portion before the noise marker.
+        noise_match = _DATE_NOISE_LINE.search(line)
+        issue_part = line[:noise_match.start()] if noise_match else line
+        if issue_part and _ISSUE_DATE_LABEL.search(issue_part):
+            labelled.extend(_extract_full_dates(issue_part))
+    if labelled:
+        return sorted(set(labelled))
+    opening_lines = []
+    for line in raw_lines:
+        if _DATE_NOISE_LINE.search(line):
+            continue
+        opening_lines.append(line)
+        if len(opening_lines) >= 35:
+            break
+    opening = "\n".join(opening_lines)[:3500]
+    return sorted(set(_extract_full_dates(opening)))
+
+
+def _has_current_actionable_reference(text, now=None):
+    """True only for a current/future year tied to an actionable notice topic.
+
+    This prevents a potentially genuine older circular announcing a 2026 exam,
+    event, deadline, admission, or registration from being silently discarded.
+    It does NOT itself mark the notice important; classification still must.
+    Copyright, website footer, and generic event-calendar lines are excluded.
+    """
+    if not text:
+        return False
+    now = now or datetime.now(timezone.utc)
+    current_year = now.year
+    action = re.compile(
+        r"\b(upcoming|event|exam|examination|admission|application|registration|"
+        r"counselling|counseling|deadline|last date|schedule|programme|program|"
+        r"convocation|interview|entrance|commencement|held on|to be held|"
+        r"प्रवेश|परीक्षा|कार्यक्रम|आयोजन|अंतिम तिथि|पंजीकरण|दीक्षांत|साक्षात्कार)\b",
+        re.I,
+    )
+    for raw_line in str(text).translate(_DEVA_DIGIT_TRANS).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or re.search(r"copyright|©|all rights reserved|website last updated|designed by|developed by|footer|event calendar", line, re.I):
+            continue
+        if not action.search(line):
+            continue
+        years = [int(y) for y in re.findall(r"(?<!\d)(20\d{2})(?!\d)", line)]
+        if any(current_year <= year <= current_year + 3 for year in years):
+            return True
+        # A full future date is useful even if OCR did not retain the year label.
+        for dt in _extract_full_dates(line):
+            if now.date() <= dt.date() <= (now + timedelta(days=365 * 3)).date():
+                return True
+    return False
+
 def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, strict_pdf_date=False):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=STALE_NOTICE_DAYS)
@@ -1172,10 +2261,13 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
     title_context = f"{normalized_title} {normalized_context}".casefold()
     amendment_signal = bool(re.search(r"corrigendum|revised|revision|amended|amendment|extension|extended|last date|deadline|date extended|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अंतिम तिथि बढ़ी|अवधि बढ़ाई", title_context, re.I))
     notice_signal = any(_match_signal(title_context, sig) for sig in _NOTICE_SIGNALS)
-    if amendment_signal and notice_signal:
+    # A title-level amendment signal must never bypass an available PDF/image OCR audit.
+    # Only use this fast-path before strict document text has been extracted.
+    if amendment_signal and notice_signal and not strict_pdf_date:
         return False
     active_signal = bool(re.search(r"admission|application|recruitment|vacancy|counselling|counseling|registration|scholarship|प्रवेश|आवेदन|भर्ती|रिक्ति|काउंसलिंग|पंजीकरण|छात्रवृत्ति", title_context, re.I))
-    if active_signal:
+    # A future date in the HTML/title cannot override an older date inside the PDF.
+    if active_signal and not strict_pdf_date:
         future_dates = [d for d in _extract_full_dates(normalized_full) if d.date() >= now.date()]
         if future_dates:
             return False
@@ -1184,10 +2276,15 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
     # Applies to all universities. Fixes CUJ case where HTML says "uploaded today"
     # but PDF content is from old batch/session (e.g., 2022-23).
     if strict_pdf_date and normalized_pdf_full.strip():
-        pdf_dates = _extract_full_dates(normalized_pdf_full)
+        # Never use max(all PDF dates): it can select © 2026 or an upcoming
+        # event from a footer and incorrectly refresh a 2023 notice.
+        pdf_dates = _extract_document_dates(normalized_pdf_full)
         pdf_session_pattern = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[-/–—]\s*((?:19|20)\d{2}|\d{2})(?!\d)")
+        # Session ranges count only when found in the title or opening section,
+        # not in footers, event calendars, or arbitrary body references.
+        session_source = "\n".join(normalized_pdf_full.splitlines()[:35])[:3500]
         pdf_session_ends = []
-        for m in pdf_session_pattern.finditer(normalized_pdf_full):
+        for m in pdf_session_pattern.finditer(session_source):
             start_yr = int(m.group(1))
             end_token = m.group(2)
             end_yr = int(end_token) if len(end_token) == 4 else (start_yr // 100) * 100 + int(end_token)
@@ -1196,6 +2293,14 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
 
         newest_pdf_date = max(pdf_dates) if pdf_dates else None
         newest_pdf_session_end = max(pdf_session_ends) if pdf_session_ends else None
+        actionable_future = _has_current_actionable_reference(normalized_pdf_full, now)
+
+        # An old issue date can still describe a currently actionable event.
+        # Preserve it for content classification/review, but never use a random
+        # upcoming-event/copyright year as the notice issue date.
+        if newest_pdf_date and newest_pdf_date < cutoff and actionable_future:
+            print("[DATE-REVIEW] Old issue date plus current/future actionable reference; retain for content verification", file=sys.stderr)
+            return False
 
         if newest_pdf_date or newest_pdf_session_end:
             session_end_dt = None
@@ -1233,12 +2338,23 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
         if not has_notice_signal and not _is_notice_document_url(url):
             if (mostly_short and (nav_count >= 2 or explicit_nav_dump)) or compact_social_dump: return True
 
-    title_dates = _extract_full_dates(normalized_title)
-    head_dates = _extract_full_dates(normalized_pdf_head) if normalized_pdf_head else []
-    body_dates = _extract_full_dates(normalized_full)
+    title_dates = _extract_document_dates(normalized_title)
+    # For documents already checked, only use credible document dates; never
+    # let arbitrary future dates elsewhere in body text refresh an old notice.
+    if strict_pdf_date and normalized_pdf_full.strip():
+        head_dates = _extract_document_dates(normalized_pdf_full)
+        body_dates = []
+    else:
+        head_dates = _extract_document_dates(normalized_pdf_head) if normalized_pdf_head else []
+        body_dates = _extract_document_dates(normalized_context)
     all_dates = list(set(title_dates + head_dates + body_dates))
 
-    if upload_date is not None:
+    # When a PDF/image has been OCR-checked, its own content is authoritative.
+    # Do not use a fresh HTML upload timestamp to make an undated/old document look new.
+    # If OCR found no date, the item remains eligible for the normal content classifier;
+    # absence of a date alone is not treated as proof that it is stale or genuine.
+    document_text_was_checked = bool(strict_pdf_date and normalized_pdf_full.strip())
+    if upload_date is not None and not document_text_was_checked:
         try:
             if upload_date.tzinfo is None: upload_date = upload_date.replace(tzinfo=timezone.utc)
             else: upload_date = upload_date.astimezone(timezone.utc)
@@ -1409,6 +2525,8 @@ def get_config():
     scan["baseline_retention_days"] = max(7, int(scan["baseline_retention_days"]))
     scan["domain_delay_seconds"] = max(0.0, min(10.0, float(scan["domain_delay_seconds"])))
     scan["max_state_items"] = max(500, min(10000, int(scan["max_state_items"])))
+    scan["max_sent_fingerprints"] = max(1000, min(50000, int(scan.get("max_sent_fingerprints", 12000))))
+    scan["max_html_fingerprints"] = max(1000, min(30000, int(scan.get("max_html_fingerprints", 8000))))
     scan["max_state_bytes"] = max(500000, min(10000000, int(scan["max_state_bytes"])))
     scan["max_pending_attempts"] = max(500, int(scan["max_pending_attempts"]))
     scan["stale_notice_days"] = max(1, int(scan["stale_notice_days"]))
@@ -1479,7 +2597,7 @@ def get_config():
 
 
 def default_state():
-    return {"version": 32, "initialized": False, "last_run": None, "items": {}, "sent_fingerprints": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
+    return {"version": 33, "initialized": False, "last_run": None, "items": {}, "sent_fingerprints": {}, "html_fingerprints": {}, "sites": {}, "review_queue": {}, "metrics": {"site_scan_success": {}, "site_scan_failure": {}, "parse_errors": 0, "sent_notifications": 0, "failed_notifications": 0, "duplicate_rejects": 0, "state_save_failures": 0, "js_renders": 0}, "stats": {"runs": 0, "sent": 0, "ignored": 0, "pending": 0, "errors": 0}}
 
 
 def load_state():
@@ -1490,6 +2608,7 @@ def load_state():
     state.setdefault("last_run", None)
     state.setdefault("items", {})
     state.setdefault("sent_fingerprints", {})
+    state.setdefault("html_fingerprints", {})
     state.setdefault("sites", {})
     state.setdefault("review_queue", {})
     state.setdefault("metrics", {})
@@ -1508,11 +2627,12 @@ def load_state():
         record["_loaded_status"] = record.get("status")
         record.setdefault("attempts", 0); record.setdefault("last_error", None); record.setdefault("summary", ""); record.setdefault("classification", None); record.setdefault("pdf_extracted", False); record.setdefault("pdf_text", ""); record.setdefault("pdf_attempts", 0); record.setdefault("ocr_used", False); record.setdefault("pdf_method", ""); record.setdefault("telegram_attempts", 0); record.setdefault("pdf_sent", False); record.setdefault("upload_date", None); record.setdefault("explicit_title", ""); record.setdefault("first_seen", utc_now()); record.setdefault("last_seen", record["first_seen"]); record.setdefault("etag", None); record.setdefault("last_modified", None); record.setdefault("pdf_hash", None); record.setdefault("pdf_hash_kind", None); record.setdefault("last_content_check_at", None)
         if not record.get("last_content_check_at"): record["last_content_check_at"] = (record.get("last_seen") or record.get("first_seen") or utc_now())
-    # Rebuild compact global sent fingerprints from retained sent records (migration-safe).
+    # Migration-safe: rebuild both compact indexes from retained sent records.
+    # Existing indexes are preserved, so previously pruned records remain deduplicated.
     for iid, record in state["items"].items():
         if isinstance(record, dict) and record.get("status") == "sent":
             _remember_sent_fingerprint(state, record, iid)
-    state["version"] = 32
+    state["version"] = 33
     return state
 
 
@@ -1734,52 +2854,85 @@ def find_fuzzy_match(site_items, title, url):
 
 
 def _remember_sent_fingerprint(state, record, iid=None):
-    """Keep compact exact fingerprints independently of the bounded item history."""
-    if not isinstance(record, dict): return
+    """Persist compact PDF and HTML fingerprints outside the prunable item history."""
+    if not isinstance(record, dict):
+        return
+    item_id = str(iid or record.get("_item_id") or "")[:100]
+    stamp = record.get("sent_at") or record.get("terminal_at") or record.get("first_seen") or utc_now()
+    title = clean_text(str(record.get("title") or ""), 120)
+    site_id = clean_text(str(record.get("site_id") or ""), 60)
+
+    # Keep PDF/content hashes in their own index, independent of full state.items.
     kind = record.get("pdf_hash_kind")
     fingerprint = record.get("pdf_hash")
-    if not fingerprint or not kind: return
-    index = state.setdefault("sent_fingerprints", {})
-    key = f"{kind}:{fingerprint}"
-    item_id = str(iid or record.get("_item_id") or "")[:100]
-    existing = index.get(key) if isinstance(index.get(key), dict) else {}
-    existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
-    stamp = record.get("sent_at") or record.get("terminal_at") or existing_date or record.get("first_seen") or utc_now()
-    index[key] = {
-        "t": clean_text(str(record.get("title") or ""), 120),
-        "s": clean_text(str(record.get("site_id") or ""), 60),
-        "d": str(stamp)[:40],
-        "i": item_id,
-    }
+    if fingerprint and kind:
+        index = state.setdefault("sent_fingerprints", {})
+        key = f"{kind}:{fingerprint}"
+        existing = index.get(key) if isinstance(index.get(key), dict) else {}
+        existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
+        index[key] = {"t": title, "s": site_id, "d": str(existing_date or stamp)[:40], "i": item_id}
+
+    # HTML notices do not always have downloadable PDFs. Keep an independent stable
+    # title+canonical-URL fingerprint so pruning old full records does not re-send them.
+    html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""), record.get("url", ""))
+    if html_hash:
+        html_index = state.setdefault("html_fingerprints", {})
+        existing = html_index.get(html_hash) if isinstance(html_index.get(html_hash), dict) else {}
+        existing_date = existing.get("d") if str(existing.get("i", "")) == item_id else None
+        html_index[html_hash] = {
+            "t": title,
+            "s": site_id,
+            "d": str(existing_date or stamp)[:40],
+            "i": item_id,
+        }
 
 
 def _is_duplicate_by_pdf_hash(state, record, exclude_iid=None):
     new_hash = record.get("pdf_hash")
     new_kind = record.get("pdf_hash_kind")
     if not new_hash or not new_kind:
-        html_hash = _html_content_hash(record.get("title", ""), record.get("context", ""))
-        if not html_hash: return None
-        new_hash, new_kind = html_hash, "html-v1"
+        new_hash = _html_content_hash(record.get("title", ""), record.get("context", ""), record.get("url", ""))
+        new_kind = "html-v2" if new_hash.startswith("html-v2:") else "html-v1"
+    if not new_hash:
+        return None
     new_title_norm = _normalize_title(record.get("title", ""))
 
-    # Exact PDF fingerprints are global across universities and do not require title equality.
-    if new_kind != "html-v1":
+    # PDF fingerprints are global across universities and survive item pruning.
+    if not str(new_kind).startswith("html-"):
         indexed = state.get("sent_fingerprints", {}).get(f"{new_kind}:{new_hash}")
         if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
             return indexed.get("t") or "previously sent identical PDF"
+    else:
+        # Current HTML identity uses title + canonical URL, ignoring volatile context.
+        indexed = state.get("html_fingerprints", {}).get(new_hash)
+        if isinstance(indexed, dict) and str(indexed.get("i", "")) != str(exclude_iid or ""):
+            indexed_title = _normalize_title(indexed.get("t", ""))
+            if new_title_norm and indexed_title and fuzz.token_sort_ratio(new_title_norm, indexed_title) >= 85:
+                return indexed.get("t") or "previously sent identical HTML notice"
+        # Compatibility: old state files used title + context (html-v1). Preserve those
+        # entries so the first deployment of this fix does not forget previously sent items.
+        legacy_hash = _legacy_html_content_hash(record.get("title", ""), record.get("context", ""))
+        legacy = state.get("html_fingerprints", {}).get(legacy_hash) if legacy_hash else None
+        if isinstance(legacy, dict) and str(legacy.get("i", "")) != str(exclude_iid or ""):
+            legacy_title = _normalize_title(legacy.get("t", ""))
+            if new_title_norm and legacy_title and fuzz.token_sort_ratio(new_title_norm, legacy_title) >= 85:
+                return legacy.get("t") or "previously sent legacy HTML notice"
 
+    # Compatibility fallback for older state.json records and fuzzy legacy matches.
     for other_iid, other in state.get("items", {}).items():
-        if other_iid == exclude_iid or not isinstance(other, dict): continue
-        if other.get("status") != "sent": continue
-        other_hash = None
-        if new_kind == "html-v1":
-            other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""))
+        if other_iid == exclude_iid or not isinstance(other, dict):
+            continue
+        if other.get("status") != "sent":
+            continue
+        if str(new_kind).startswith("html-"):
+            other_hash = _html_content_hash(other.get("title", ""), other.get("context", ""), other.get("url", ""))
         else:
-            if other.get("pdf_hash_kind") != new_kind: continue
+            if other.get("pdf_hash_kind") != new_kind:
+                continue
             other_hash = other.get("pdf_hash")
-        if not other_hash or other_hash != new_hash: continue
-        # HTML title/context fingerprints are less reliable than byte/content PDF hashes.
-        if new_kind == "html-v1":
+        if not other_hash or other_hash != new_hash:
+            continue
+        if str(new_kind).startswith("html-"):
             other_title_norm = _normalize_title(other.get("title", ""))
             if not new_title_norm or not other_title_norm or fuzz.token_sort_ratio(new_title_norm, other_title_norm) < 85:
                 continue
@@ -1804,6 +2957,9 @@ def extract_candidates(html_text, page_url, site, scan):
         href = _canonical_spa_url(urljoin(page_url, a.get("href", "")))
         if not is_http_url(href) or not same_host(page_url, href): continue
         if _is_navigation_url(href): continue
+        if _is_rims_non_notice_url(href):
+            print(f"[FILTER] Ignored RIMS service URL: {href[:120]}", file=sys.stderr)
+            continue
 
         title = clean_text(a.get_text(" ", strip=True), 300)
         parent = a.find_parent("tr")
@@ -1863,9 +3019,26 @@ def extract_candidates(html_text, page_url, site, scan):
             parts = re.split(r"[|\-–—:]", context)
             for p in parts:
                 p = clean_text(p.strip(), 200)
-                if len(p) >= 20 and not _is_generic_title(p) and not _is_language_selector(p):
+                if (len(p) >= 20 and not _is_generic_title(p)
+                        and not _is_language_selector(p)
+                        and not _looks_like_menu_dump(p)
+                        and not _looks_like_rims_menu_dump(p, href)):
                     title = p
                     break
+
+        if _looks_like_rims_menu_dump(title, href):
+            if not _is_notice_document_url(href):
+                print(f"[FILTER] Ignored RIMS navigation-text candidate: {title[:100]!r}", file=sys.stderr)
+                continue
+            replacement = _filename_to_title(href) or _title_from_url(href, min_len=8)
+            if replacement and not _looks_like_rims_menu_dump(replacement, href):
+                title = replacement
+            else:
+                title = f"RIMS Notice Document {hashlib.sha256(href.encode()).hexdigest()[:8]}"
+
+        if _looks_like_nusrl_homepage_dump(title, href):
+            print(f"[FILTER] Ignored NUSRL homepage/navigation text: {title[:100]!r}", file=sys.stderr)
+            continue
 
         score = local_score(title, href, context, keywords)
         href_lower = href.lower()
@@ -2047,23 +3220,6 @@ def _robots_allowed(session, url, timeout):
 def discover_site(session, site, scan):
     base_url = site["url"]
     timeout = int(site.get("request_timeout_seconds", scan["request_timeout_seconds"]))
-    diag_enabled = bool(site.get("diagnostics", scan.get("diagnostics", False)))
-    diag_events = []
-    diag_status_codes = Counter()
-    diag_content_types = Counter()
-    diag_js_attempts = 0
-    def _diag(event, **fields):
-        if not diag_enabled:
-            return
-        safe = {k: (str(v).replace("\n", " ").replace("\r", " ")[:500]) for k, v in fields.items()}
-        line = json.dumps({"site_id": site.get("id"), "event": event, **safe}, ensure_ascii=False, sort_keys=True)
-        print("[DIAG] " + line, file=sys.stderr, flush=True)
-        diag_events.append({"event": event, **safe})
-    _diag("site_start", name=site.get("name"), base_url=base_url,
-          js_mode=site.get("js_render", "auto"), js_render_enabled=JS_RENDER_ENABLED,
-          playwright_available=_PLAYWRIGHT_AVAILABLE, timeout_seconds=timeout,
-          wait_selector=site.get("js_wait_for_selector", ""), wait_after_ms=site.get("js_wait_after_ms", "default"),
-          max_js_renders=JS_MAX_RENDER_PER_SITE)
     effective_scan = dict(scan)
     effective_scan["request_timeout_seconds"] = timeout
     max_pages = scan["max_discovery_pages_per_site"]
@@ -2119,7 +3275,6 @@ def discover_site(session, site, scan):
         try:
             if not _robots_allowed(session, page, timeout):
                 print(f"[ROBOTS-SKIP] {page}", file=sys.stderr)
-                _diag("robots_disallowed", url=page, reason="robots.txt parser denied URL")
                 continue
             domain_delay = float(scan.get("domain_delay_seconds", 1.0) or 0.0)
             if domain_delay > 0 and visited: time.sleep(min(domain_delay, 10.0))
@@ -2135,24 +3290,12 @@ def discover_site(session, site, scan):
                 response = session.get(page, timeout=timeout, allow_redirects=True, verify=verify_ssl)
                 final_url = canonical_url(response.url)
                 content_type = response.headers.get("content-type", "").lower()
-                diag_status_codes[str(response.status_code)] += 1
-                diag_content_types[content_type.split(";", 1)[0] or "(missing)"] += 1
-                _diag("http_response", url=page, final_url=final_url, status=response.status_code,
-                      content_type=content_type, bytes=len(response.content or b""),
-                      server=response.headers.get("server", ""), location=response.headers.get("location", ""),
-                      elapsed_seconds=round(getattr(response, "elapsed", None).total_seconds(), 3) if getattr(response, "elapsed", None) is not None else "unknown")
             except requests.RequestException as request_exc:
-                _diag("http_request_exception", url=page, exception_type=type(request_exc).__name__,
-                      exception=str(request_exc), js_mode=site.get("js_render", "auto"),
-                      js_enabled=JS_RENDER_ENABLED, playwright_available=_PLAYWRIGHT_AVAILABLE,
-                      js_render_count=js_render_count, js_render_cap=JS_MAX_RENDER_PER_SITE)
                 can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
                 if can_browser_retry:
                     print(f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}", file=sys.stderr)
                     rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                     js_render_count += 1
-                    diag_js_attempts += 1
-                    _diag("playwright_network_fallback", url=page, method=js_method, html_chars=len(rendered_html or ""), success=bool(rendered_html))
                     if rendered_html:
                         response_text = rendered_html
                         final_url = _canonical_spa_url(rendered_url or page)
@@ -2167,8 +3310,6 @@ def discover_site(session, site, scan):
                     print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
                     rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                     js_render_count += 1
-                    diag_js_attempts += 1
-                    _diag("playwright_http_fallback", url=page, http_status=response.status_code, method=js_method, html_chars=len(rendered_html or ""), success=bool(rendered_html))
                     if rendered_html:
                         response_text = rendered_html
                         final_url = _canonical_spa_url(rendered_url)
@@ -2196,24 +3337,16 @@ def discover_site(session, site, scan):
                     continue
                 if "html" not in ct_lower and "xhtml" not in ct_lower:
                     print(f"[SKIP] Non-HTML, non-document content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
-                    _diag("unsupported_content_type", url=page, status=response.status_code, content_type=ct_lower, bytes=len(response.content or b""))
                     continue
 
             js_mode = site.get("js_render", "auto")
             source_html = response.text if response is not None else (response_text or "")
             should_render_js = False if rendered_from_waf else _should_render_js(site, source_html, page)
-            _diag("js_render_decision", url=page, mode=js_mode, should_render=should_render_js,
-                  rendered_from_waf=rendered_from_waf, raw_html_chars=len(source_html or ""),
-                  angular_markers=bool(re.search(r"ng-app|ng-view|ng-href|ng-controller|__NEXT_DATA__|__NUXT__|id=[\"']root[\"']", source_html or "", re.I)),
-                  js_enabled=JS_RENDER_ENABLED, playwright_available=_PLAYWRIGHT_AVAILABLE,
-                  render_count=js_render_count, render_cap=JS_MAX_RENDER_PER_SITE)
 
             if (should_render_js and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE):
                 print(f"[JS-RENDER] {page} (mode={js_mode})", file=sys.stderr)
                 rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
                 js_render_count += 1
-                diag_js_attempts += 1
-                _diag("playwright_primary", url=page, method=js_method, html_chars=len(rendered_html or ""), success=bool(rendered_html), selector=site.get("js_wait_for_selector", ""), selector_timeout_ms=site.get("js_selector_timeout_ms", "default"))
                 if rendered_html:
                     response_text = rendered_html
                     final_url = _canonical_spa_url(rendered_url)
@@ -2224,21 +3357,10 @@ def discover_site(session, site, scan):
             elif response_text is None: response_text = response.text if response is not None else ""
 
             if _is_empty_page_text(response_text):
-                _diag("empty_page_text", url=page, final_url=final_url, html_chars=len(response_text or ""),
-                      status=response.status_code if response is not None else "browser_fallback",
-                      reason="page text is empty after response/render")
                 successful_pages += 1
                 continue
 
             found = extract_candidates(response_text, final_url, site, effective_scan)
-            soup_diag = BeautifulSoup(response_text, "html.parser")
-            _diag("extraction_result", url=page, final_url=final_url, html_chars=len(response_text or ""),
-                  title=clean_text(soup_diag.title.get_text(" ", strip=True), 180) if soup_diag.title else "",
-                  anchors=len(soup_diag.find_all("a")), href_anchors=len(soup_diag.find_all("a", href=True)),
-                  ng_href_anchors=len(soup_diag.find_all("a", attrs={"ng-href": True})),
-                  tables=len(soup_diag.find_all("table")), rows=len(soup_diag.find_all("tr")),
-                  pdf_links=sum(1 for a in soup_diag.find_all("a", href=True) if ".pdf" in (a.get("href") or "").lower()),
-                  candidate_count=len(found), candidate_sample=[{"title": x.get("title", "")[:100], "url": x.get("url", "")[:180]} for x in found[:5]])
             for row in found:
                 old = candidates.get(row["url"])
                 if old is None or row["score"] > old["score"]: candidates[row["url"]] = row
@@ -2260,12 +3382,7 @@ def discover_site(session, site, scan):
                 if any(kw in haystack for kw in discovery_keywords if kw):
                     queue.append(href)
                     if len(queue) >= total_budget * 2: break
-        except Exception as exc:
-            error_text = f"{page}: {type(exc).__name__}: {clean_text(str(exc), 400)}"
-            errors.append(error_text)
-            _diag("page_exception", url=page, exception_type=type(exc).__name__, exception=str(exc),
-                  error_count=len(errors), successful_pages=successful_pages, candidates_so_far=len(candidates))
-            print(f"[PAGE-ERROR] site={site.get('id')} url={page} type={type(exc).__name__} error={clean_text(str(exc), 400)}", file=sys.stderr, flush=True)
+        except Exception as exc: errors.append(f"{page}: {clean_text(str(exc), 250)}")
 
     values = list(candidates.values())
     def _final_sort_key(item):
@@ -2277,28 +3394,7 @@ def discover_site(session, site, scan):
             except Exception: pass
         return (0, 0, item.get("score", 0))
     values.sort(key=_final_sort_key, reverse=True)
-    final_values = values[: site.get("max_items_per_site", scan["max_items_per_site"])]
-    if diag_enabled:
-        if successful_pages == 0:
-            if errors:
-                verdict = "ALL_VISITED_PAGES_FAILED_OR_UNUSABLE; inspect page_exception/http_request_exception/unsupported_content_type events"
-            elif diag_events and any(x.get("event") == "robots_disallowed" for x in diag_events):
-                verdict = "NO_SUCCESSFUL_PAGE; robots.txt denied all scanned URLs or no accessible URL remained"
-            else:
-                verdict = "NO_SUCCESSFUL_PAGE; inspect diagnostics for HTTP/JS/content-type/empty-page cause"
-        elif not final_values:
-            verdict = "PAGES_FETCHED_BUT_ZERO_CANDIDATES; inspect extraction_result counts, selectors, title/link filters and page content"
-        elif errors:
-            verdict = "PARTIAL_SUCCESS_WITH_ERRORS; some pages may have been missed"
-        else:
-            verdict = "SCAN_FETCHED_CANDIDATES_WITHOUT_RECORDED_PAGE_ERRORS; coverage is not guaranteed"
-        _diag("site_verdict", verdict=verdict, visited_pages=len(visited), successful_pages=successful_pages,
-              candidates_found=len(values), candidates_returned=len(final_values), errors=len(errors),
-              http_status_counts=dict(diag_status_codes), content_type_counts=dict(diag_content_types),
-              playwright_attempts=diag_js_attempts, playwright_available=_PLAYWRIGHT_AVAILABLE,
-              js_render_enabled=JS_RENDER_ENABLED, js_render_count=js_render_count,
-              urls_visited=sorted(visited), errors_detail=errors[:20])
-    return (site["id"], final_values, errors, successful_pages > 0)
+    return (site["id"], values[: site.get("max_items_per_site", scan["max_items_per_site"])], errors, successful_pages > 0)
 
 
 def scan_site(site, scan): return discover_site(make_session(), site, scan)
@@ -2571,33 +3667,75 @@ def download_pdf_content(pdf_url, timeout=30, verify_ssl=True, deadline=None):
 
 
 def keyword_fallback(items):
+    """Conservative no-Gemini classifier: avoid spam and preserve ambiguous cases for review.
+
+    Never marks every candidate important. High-confidence send candidates need
+    a specific notice signal in the title/explicit title (or a clear notice URL
+    plus matching body signal). Generic navigation, marketing, archive, and
+    footer-only keyword matches are rejected. Ambiguous candidates are queued
+    for review instead of being silently treated as important or junk.
+    """
     result = {}
+    strong = tuple(str(kw).casefold() for kw in STRONG_KEYWORDS if kw)
+    noise_patterns = re.compile(
+        r"\b(home|about us|contact us|gallery|campus life|visit campus|read more|"
+        r"photo gallery|archive|archives|pagination|language|login|sign in|"
+        r"privacy policy|terms and conditions|copyright|all rights reserved|"
+        r"upcoming event calendar)\b|(?:►|»|›|→|▸|▶)", re.I)
     for index, item in enumerate(items):
-        text = (f"{item.get('title', '')} {item.get('url', '')} {item.get('context', '')} {item.get('pdf_text', '')}").lower()
-        keyword_match = any(kw in text for kw in STRONG_KEYWORDS if kw)
-        category = "notice"
-        if any(k in text for k in ("admission", "प्रवेश")): category = "admission"
-        elif any(k in text for k in ("result", "परिणाम", "रिजल्ट")): category = "result"
-        elif any(k in text for k in ("admit card", "प्रवेश पत्र")): category = "admit_card"
-        elif any(k in text for k in ("answer key", "उत्तर कुंजी")): category = "answer_key"
-        elif any(k in text for k in ("revaluation", "पुनर्मूल्यांकन")): category = "revaluation"
-        elif any(k in text for k in ("migration", "माइग्रेशन", "provisional certificate", "duplicate marksheet")): category = "migration_certificate"
-        elif any(k in text for k in ("fee", "शुल्क")): category = "fee_structure"
-        elif any(k in text for k in ("academic calendar", "शैक्षणिक कैलेंडर")): category = "academic_calendar"
-        elif any(k in text for k in ("syllabus", "पाठ्यक्रम")): category = "syllabus"
-        elif any(k in text for k in ("timetable", "time table", "समय सारिणी")): category = "timetable"
-        elif any(k in text for k in ("scholarship", "छात्रवृत्ति")): category = "scholarship"
-        elif any(k in text for k in ("placement", "प्लेसमेंट")): category = "placement"
-        elif any(k in text for k in ("tender", "निविदा")): category = "tender"
-        elif any(k in text for k in ("recruitment", "vacancy", "भर्ती")): category = "vacancy"
-        elif any(k in text for k in ("exam schedule", "examination programme", "परीक्षा कार्यक्रम")): category = "exam_schedule"
-        title_text = (item.get("title") or "").strip()
-        pdf_hint = (item.get("pdf_summary_hint") or "").strip()
-        ctx = (item.get("context") or "").strip()
-        summary = ""
-        if pdf_hint and pdf_hint.lower() != title_text.lower(): summary = pdf_hint
-        elif ctx and ctx.lower() != title_text.lower() and len(ctx) >= 20: summary = ctx
-        result[str(index)] = {"important": True, "category": category, "summary": clean_text(summary, 180), "title_hi": None, "unverified": not keyword_match, "confidence": "high" if keyword_match else "low", "pre_classified": False}
+        title = clean_text(item.get("explicit_title") or item.get("title") or "", 300)
+        url = str(item.get("url") or "")
+        context = clean_text(item.get("context") or "", 2500)
+        pdf_text = clean_text(item.get("pdf_text") or "", 3500)
+        pdf_hint = clean_text(item.get("pdf_summary_hint") or "", 300)
+        title_norm = re.sub(r"\s+", " ", title).strip()
+        title_lower = title_norm.casefold()
+        url_path = unquote(urlparse(url).path).replace("-", " ").replace("_", " ").casefold()
+        # Keep the primary decision anchored to title/URL, not arbitrary footer text.
+        title_signal = any(kw in title_lower for kw in strong)
+        url_signal = any(kw in url_path for kw in strong)
+        body_text = f"{context} {pdf_hint} {pdf_text}".casefold()
+        body_signal = any(kw in body_text for kw in strong)
+        combined_for_noise = f"{title_lower} {url_path}"
+        generic = (not title_norm or _is_generic_title(title_norm) or bool(noise_patterns.search(combined_for_noise))
+                   or _matched_excluded_title_signal(title_norm))
+        # URL alone is insufficient; it must pair with a meaningful title/body.
+        high_confidence = not generic and (title_signal or (url_signal and body_signal))
+        if high_confidence:
+            category = "notice"
+            if any(k in title_lower for k in ("admission", "प्रवेश")): category = "admission"
+            elif any(k in title_lower for k in ("result", "परिणाम", "रिजल्ट")): category = "result"
+            elif any(k in title_lower for k in ("admit card", "प्रवेश पत्र")): category = "admit_card"
+            elif any(k in title_lower for k in ("answer key", "उत्तर कुंजी")): category = "answer_key"
+            elif any(k in title_lower for k in ("revaluation", "पुनर्मूल्यांकन")): category = "revaluation"
+            elif any(k in title_lower for k in ("migration", "माइग्रेशन", "provisional certificate", "duplicate marksheet")): category = "migration_certificate"
+            elif any(k in title_lower for k in ("fee", "शुल्क")): category = "fee_structure"
+            elif any(k in title_lower for k in ("academic calendar", "शैक्षणिक कैलेंडर")): category = "academic_calendar"
+            elif any(k in title_lower for k in ("syllabus", "पाठ्यक्रम")): category = "syllabus"
+            elif any(k in title_lower for k in ("timetable", "time table", "समय सारिणी", "programme", "program")): category = "timetable"
+            elif any(k in title_lower for k in ("scholarship", "छात्रवृत्ति")): category = "scholarship"
+            elif any(k in title_lower for k in ("placement", "प्लेसमेंट")): category = "placement"
+            elif any(k in title_lower for k in ("tender", "निविदा")): category = "tender"
+            elif any(k in title_lower for k in ("recruitment", "vacancy", "भर्ती")): category = "vacancy"
+            elif any(k in title_lower for k in ("exam schedule", "examination programme", "परीक्षा कार्यक्रम")): category = "exam_schedule"
+            summary = pdf_hint if pdf_hint and pdf_hint.casefold() != title_lower else context
+            result[str(index)] = {"important": True, "category": category,
+                "summary": clean_text(summary, 180), "title_hi": None,
+                "unverified": True, "confidence": "medium", "pre_classified": False,
+                "fallback_reason": "specific_title_signal"}
+        elif generic:
+            result[str(index)] = {"important": False, "category": "other", "summary": "",
+                "title_hi": None, "unverified": True, "confidence": "high",
+                "pre_classified": False, "fallback_reason": "navigation_or_low_relevance_noise"}
+        else:
+            # Do not silently drop a possible genuine notice when keywords are weak.
+            # The main pipeline adds needs_review items to its review queue.
+            summary = pdf_hint if pdf_hint and pdf_hint.casefold() != title_lower else context
+            result[str(index)] = {"important": False, "category": "other",
+                "summary": clean_text(summary, 180), "title_hi": None,
+                "unverified": True, "confidence": "low", "ambiguous": True,
+                "needs_review": True, "pre_classified": False,
+                "fallback_reason": "ambiguous_no_gemini_review_required"}
     return result
 
 
@@ -3139,7 +4277,7 @@ def truncate_telegram(text, limit=TELEGRAM_SAFE_LIMIT):
     return truncated.rstrip() + "\n\n<i>…(truncated)</i>"
 
 
-def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000, sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60):
+def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, max_bytes=3000000, sent_retention_days=90, ignored_retention_days=30, baseline_retention_days=60, max_sent_fingerprints=12000, max_html_fingerprints=8000):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=retention_days)
     items = state.setdefault("items", {})
@@ -3209,17 +4347,36 @@ def prune_state(state, retention_days, max_items=3000, max_pending_attempts=72, 
                 for _, key in sorted(active_rows):
                     if len(items) <= max_items: break
                     items.pop(key, None)
-    # Compact sent fingerprints survive eviction of full item records, preventing repeat sends.
-    fingerprints = state.setdefault("sent_fingerprints", {})
+    # Compact indexes are pruned independently from state.items. Their own caps
+    # prevent max_state_items from silently shortening deduplication history.
     fingerprint_cutoff = now - timedelta(days=max(7, int(sent_retention_days)))
+    fingerprints = state.setdefault("sent_fingerprints", {})
     for key, entry in list(fingerprints.items()):
         if not isinstance(entry, dict):
-            fingerprints.pop(key, None); continue
+            fingerprints.pop(key, None)
+            continue
         stamp = _parse_utc_timestamp(entry.get("d"))
-        if stamp and stamp < fingerprint_cutoff: fingerprints.pop(key, None)
-    if len(fingerprints) > max_items:
-        ordered_fingerprints = sorted(fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
-        for key, _ in ordered_fingerprints[:len(fingerprints) - max_items]: fingerprints.pop(key, None)
+        if stamp and stamp < fingerprint_cutoff:
+            fingerprints.pop(key, None)
+    sent_cap = max(1000, int(max_sent_fingerprints))
+    if len(fingerprints) > sent_cap:
+        ordered = sorted(fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
+        for key, _ in ordered[:len(fingerprints) - sent_cap]:
+            fingerprints.pop(key, None)
+
+    html_fingerprints = state.setdefault("html_fingerprints", {})
+    for key, entry in list(html_fingerprints.items()):
+        if not isinstance(entry, dict):
+            html_fingerprints.pop(key, None)
+            continue
+        stamp = _parse_utc_timestamp(entry.get("d"))
+        if stamp and stamp < fingerprint_cutoff:
+            html_fingerprints.pop(key, None)
+    html_cap = max(1000, int(max_html_fingerprints))
+    if len(html_fingerprints) > html_cap:
+        ordered = sorted(html_fingerprints.items(), key=lambda kv: str((kv[1] or {}).get("d", "")))
+        for key, _ in ordered[:len(html_fingerprints) - html_cap]:
+            html_fingerprints.pop(key, None)
 
     def serialized_size():
         try:
@@ -3498,12 +4655,136 @@ def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_s
     return list(by_id.items())
 
 
+def run_self_tests():
+    """Offline regression checks; never scans websites or sends Telegram messages."""
+    checks = 0
+    def check(condition, message):
+        nonlocal checks
+        if not condition:
+            raise AssertionError(message)
+        checks += 1
+
+    first_hash = _html_content_hash("Exam Form Notice", "visitor count 100", "https://example.edu/notice?id=4&utm_source=first")
+    second_hash = _html_content_hash(" Exam   Form Notice ", "visitor count 900", "https://example.edu/notice?utm_medium=second&id=4")
+    check(bool(first_hash) and first_hash == second_hash, "HTML identity changed due to context/tracking parameters")
+    check(not _meaningful_metadata_change("Exam Form Notice", "Exam Form Notice", "visitor count 100; sidebar updated", "visitor count 900; sidebar refreshed"), "Dynamic context triggered reprocessing")
+    check(_meaningful_metadata_change("Exam Form Notice", "Exam Form Notice", "Last date: 10 October 2026", "Last date: 20 October 2026"), "Meaningful deadline change was not detected")
+
+    state = default_state()
+    sent_record = {"title":"Exam Form Notice", "context":"visitor count 100", "url":"https://example.edu/notice?id=4&utm_source=first", "site_id":"test-site", "sent_at":utc_now(), "_item_id":"sent-old"}
+    _remember_sent_fingerprint(state, sent_record, "sent-old")
+    new_record = {"title":"Exam Form Notice", "context":"visitor count 900", "url":"https://example.edu/notice?utm_medium=second&id=4"}
+    check(_is_duplicate_by_pdf_hash(state, new_record, exclude_iid="new-id") == "Exam Form Notice", "Previously sent HTML notice was not deduplicated")
+
+    legacy_state = default_state()
+    legacy_hash = _legacy_html_content_hash("Old Notice", "old static context that is long enough")
+    legacy_state["html_fingerprints"][legacy_hash] = {"t":"Old Notice", "s":"test-site", "d":utc_now(), "i":"old-id"}
+    legacy_record = {"title":"Old Notice", "context":"old static context that is long enough", "url":"https://example.edu/old-notice"}
+    check(_is_duplicate_by_pdf_hash(legacy_state, legacy_record, exclude_iid="new-id") == "Old Notice", "Legacy html-v1 fingerprint was not recognized")
+
+    rims_menu = ("About Us ► An Introduction Director Administration University Vice-Chancellor "
+                 "RTI PIO Citizen Charter On-going Projects How to Reach RIMS Academics ► "
+                 "Departments Faculty Admission Info Multidisciplinary")
+    check(_looks_like_rims_menu_dump(rims_menu, "https://rimsranchi.ac.in/"), "RIMS menu dump was not detected")
+    check(_should_suppress_rims_candidate({"url":"https://rimsranchi.ac.in/onln_reg_sys.php", "title":"For Online OPD Registration, click here"}), "RIMS OPD service URL was not suppressed")
+    check(not _should_suppress_rims_candidate({"url":"https://rimsranchi.ac.in/notifications-order.php", "title":"Notice Regarding Examination Schedule"}), "Real RIMS notice page was incorrectly suppressed")
+    check(_should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/about-us/", "title":"Visit NUSRL Campus Read More chevron_right"}), "NUSRL About Us page was not suppressed")
+    check(_should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/", "title":"Visit NUSRL Campus modern classrooms Life at NUSRL Read More chevron_right"}), "NUSRL homepage marketing dump was not suppressed")
+    check(not _should_suppress_site_noise({"url":"https://nusrlranchi.ac.in/announcements/", "title":"List of Provisionally Eligible Candidates for PG Diploma Programmes"}), "Real NUSRL announcement was incorrectly suppressed")
+    check(not _looks_like_rims_menu_dump("Notice Regarding Examination Schedule", "https://rimsranchi.ac.in/notifications-order.php"), "Real RIMS notice title was classified as menu text")
+
+    # Stale-date regressions: amendment wording must not bypass strict PDF dates.
+    old_pdf = "Office Order dated 12-03-2022; Examination Notice"
+    check(_is_stale_notice("Revised Examination Notice", "", "https://example.edu/notice.pdf", pdf_text=old_pdf, strict_pdf_date=True),
+          "Old PDF date was bypassed by Revised/Examination title")
+    recent_pdf = "Examination Notice dated 24-10-2026"
+    check(not _is_stale_notice("Revised Examination Notice", "", "https://example.edu/notice.pdf", pdf_text=recent_pdf, strict_pdf_date=True),
+          "Recent PDF date was incorrectly rejected")
+    old_with_copyright = ("Office Order dated 12-03-2023\nExamination Notice\nDetails of examination\n" 
+                          "Upcoming Event 2026\n© 2026 Vinoba Bhave University")
+    check(not _is_stale_notice("Examination Notice", "", "https://example.edu/old.pdf", pdf_text=old_with_copyright, strict_pdf_date=True),
+          "Potentially actionable 2026 event was silently discarded with an old 2023 issue date")
+    recent_labelled = ("Examination Notice\nDate: 24-10-2026\nDetails below\n" 
+                       "© 2026 University")
+    check(not _is_stale_notice("Examination Notice", "", "https://example.edu/new.pdf", pdf_text=recent_labelled, strict_pdf_date=True),
+          "Recent labelled issue date was not accepted")
+    undated_old_footer = ("Examination Notice\nCandidates are informed about examination.\n" 
+                          "Upcoming Event 2026\n© 2026 University")
+    check(not _is_stale_notice("Examination Notice", "", "https://example.edu/undated.pdf", upload_date=datetime(2023, 1, 1, tzinfo=timezone.utc), pdf_text=undated_old_footer, strict_pdf_date=True),
+          "Undated document was falsely rejected using footer/copyright year")
+    check(not _is_stale_notice("Corrigendum Examination Notice", "", "https://example.edu/notice.pdf", upload_date=datetime(2022, 1, 1, tzinfo=timezone.utc), pdf_text="Notice regarding examination; no date printed", strict_pdf_date=True),
+          "Undated document was incorrectly marked stale only from old HTML upload date")
+
+    # Fallback classifier tests: no Gemini keys must not turn every candidate into spam.
+    fallback = keyword_fallback([
+        {"title": "Examination Notice - MLIS Semester I", "url": "https://example.edu/notices/mlis.pdf"},
+        {"title": "Home About Us Contact Us Gallery", "url": "https://example.edu/"},
+        {"title": "University Update", "url": "https://example.edu/page", "context": "A potentially relevant university update"},
+    ])
+    check(fallback["0"]["important"] is True, "Specific exam notice was missed by keyword fallback")
+    check(fallback["1"]["important"] is False, "Navigation noise was marked important by keyword fallback")
+    check(fallback["2"].get("needs_review") is True and fallback["2"]["important"] is False,
+          "Ambiguous no-Gemini candidate was not routed for review")
+    mixed_old = ("Office Order dated 12-03-2023\nExamination Notice\nDetails of examination\n"
+                 "Upcoming Event 2026\n© 2026 Vinoba Bhave University")
+    check(not _is_stale_notice("Examination Notice", "", "https://example.edu/event.pdf", pdf_text=mixed_old, strict_pdf_date=True),
+          "Old issue date with potentially actionable 2026 event was silently discarded")
+    irrelevant_future = ("Office Order dated 12-03-2023\nExamination Notice\nDetails of examination\n"
+                         "© 2026 Vinoba Bhave University\nAll rights reserved")
+    check(_is_stale_notice("Examination Notice", "", "https://example.edu/old.pdf", pdf_text=irrelevant_future, strict_pdf_date=True),
+          "Copyright year alone refreshed an old notice")
+
+    # Cache tests use a tiny local key/value pair; no network or Telegram access.
+    _cache_clear()
+    _cache_put("self-test-pdf", b"pdf-test-content")
+    check(_cache_get("self-test-pdf") == b"pdf-test-content", "PDF cache write/read failed")
+    _cache_clear()
+    check(_cache_get("self-test-pdf") is None, "PDF cache clear failed")
+
+    plain_html = {"title":"Examination Notice", "url":"https://example.edu/notice", "is_pdf":False, "is_image":False, "pdf_text":"Notice dated 24-10-2026", "pdf_extracted":False}
+    check(_attachment_verification_gate(plain_html) == (False, "plain_html_without_pdf_or_image_attachment"),
+          "Plain HTML without PDF/image was allowed to send")
+    unreadable_pdf = {"title":"Examination Notice", "url":"https://example.edu/notice.pdf", "is_pdf":True, "pdf_text":"", "pdf_extracted":False}
+    check(_attachment_verification_gate(unreadable_pdf) == (False, "attachment_not_readable_or_ocr_failed"),
+          "Unreadable PDF was allowed to send without verification")
+    readable_pdf = {"title":"Examination Notice", "url":"https://example.edu/notice.pdf", "is_pdf":True, "pdf_text":"Examination notice issued on 24-10-2026. Candidates should follow the instructions.", "pdf_extracted":True}
+    check(_attachment_verification_gate(readable_pdf)[0] is True,
+          "Readable PDF with extracted text was incorrectly blocked")
+    readable_image = {"title":"Examination Notice", "url":"https://example.edu/notice.jpg", "is_image":True, "pdf_text":"Examination notice issued on 24-10-2026. Candidates should follow the instructions.", "pdf_extracted":True}
+    check(_attachment_verification_gate(readable_image)[0] is True,
+          "Readable image OCR was incorrectly blocked")
+
+    print(f"[SELF-TEST] PASS: {checks} offline regression checks; no websites or Telegram messages used.")
+    return 0
+
+
+def _attachment_verification_gate(record):
+    """Return (allowed, reason) before Telegram delivery.
+
+    HTML text is still parsed/classified for discovery and verification, but a
+    plain HTML page with no linked PDF/image candidate is not itself sent.
+    PDFs/images must have readable extracted text before delivery; failed OCR or
+    download remains retryable instead of being sent unverified.
+    """
+    is_pdf_item = bool(record.get("is_pdf") or is_pdf(str(record.get("url", ""))) or _looks_like_pdf_url(str(record.get("url", ""))))
+    is_image_item = bool(record.get("is_image") or urlparse(str(record.get("url", ""))).path.lower().endswith(
+        (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")))
+    if not is_pdf_item and not is_image_item:
+        return False, "plain_html_without_pdf_or_image_attachment"
+    extracted = bool(record.get("pdf_extracted"))
+    readable_text = clean_text(record.get("pdf_text", ""), MAX_PDF_TEXT_CHARS).strip()
+    if not extracted or len(readable_text) < 25:
+        return False, "attachment_not_readable_or_ocr_failed"
+    return True, "verified_attachment_text_available"
+
+
 def main():
-    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _OCR_CONTENT_CACHE
+    global STALE_NOTICE_DAYS, _RUNTIME_PDF_CACHE, _RUNTIME_PDF_CACHE_BYTES, _OCR_CONTENT_CACHE
     global _GEMINI_API_KEY, _GEMINI_QUOTA_EXHAUSTED
     global _GEMINI_KEYS_POOL, _GEMINI_KEY_INDEX, _GEMINI_DEAD_KEYS, _MODELS_DISCOVERED, _DYNAMIC_MODELS
     global _JS_RENDER_COUNT
     _RUNTIME_PDF_CACHE = {}
+    _RUNTIME_PDF_CACHE_BYTES = 0
     _OCR_CONTENT_CACHE = {}
     with _JS_RENDER_COUNT_LOCK: _JS_RENDER_COUNT = 0
     _DEAD_MODELS.clear()
@@ -3610,6 +4891,9 @@ def main():
         baseline_scan_complete = baseline_can_complete(current_scan_success, result.get("errors", []), int(site.get("baseline_max_errors", scan.get("baseline_max_errors", 3))))
         if not ss["baseline_complete"] and baseline_scan_complete:
             for candidate in candidates:
+                if _should_suppress_site_noise(candidate):
+                    print(f"[FILTER] Baseline navigation/service candidate suppressed: {str(candidate.get('url', ''))[:100]}", file=sys.stderr)
+                    continue
                 iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
                 state["items"].setdefault(iid, {"site_id": sid, "site_name": site["name"], "url": candidate["url"], "title": candidate["title"], "explicit_title": candidate.get("explicit_title", ""), "context": candidate.get("context", "")[:700], "is_pdf": bool(candidate.get("is_pdf")), "is_image": bool(candidate.get("is_image")), "first_seen": utc_now(), "last_seen": utc_now(), "status": "baseline", "attempts": 0, "summary": "", "classification": None, "pdf_extracted": False, "pdf_text": "", "pdf_attempts": 0, "ocr_used": False, "pdf_method": "", "telegram_attempts": 0, "pdf_sent": False, "upload_date": candidate.get("upload_date"), "last_error": None, "etag": None, "last_modified": None, "pdf_hash": None, "pdf_hash_kind": None, "last_content_check_at": None})
             ss["baseline_complete"] = True
@@ -3624,6 +4908,9 @@ def main():
 
         site_items_list = site_index.get(sid, [])
         for candidate in candidates:
+            if _should_suppress_site_noise(candidate):
+                print(f"[FILTER] Navigation/service candidate suppressed: {str(candidate.get('url', ''))[:100]}", file=sys.stderr)
+                continue
             iid = item_id(sid, candidate["url"], candidate["title"], candidate.get("context", ""))
             record = state["items"].get(iid)
             upload_dt = _parse_upload_date(candidate.get("upload_date"))
@@ -3747,6 +5034,17 @@ def main():
     suppress_stale_pending_and_ready(state)
     pending = [(iid, record) for iid, record in pending if record.get("status") == "pending"]
     pending = enqueue_persisted_pending(state, pending, scan["max_pending_attempts"], {site["id"] for site in cfg["websites"]})
+    _safe_pending = []
+    for _iid, _record in pending:
+        if _should_suppress_site_noise(_record):
+            if _record.get("status") == "pending":
+                _record["status"] = "ignored"
+                _record["last_error"] = "Suppressed known navigation/service page; not a notice"
+                _record["terminal_at"] = utc_now()
+            print(f"[FILTER] Suppressed persisted navigation/service item: {str(_record.get('url', ''))[:100]}", file=sys.stderr)
+            continue
+        _safe_pending.append((_iid, _record))
+    pending = _safe_pending
     state["initialized"] = all(site_state(state, site["id"])["baseline_complete"] for site in cfg["websites"])
     pending = list({iid: record for iid, record in pending}.items())
     pending.sort(key=lambda pair: pending_priority(pair[1], scan["keywords"]), reverse=True)
@@ -3861,6 +5159,24 @@ def main():
     ready.sort(key=lambda pair: pair[1].get("first_seen", ""))
     sent_count = 0
     for iid, record in ready[: scan["max_new_items_per_run"]]:
+        # Do not send ordinary HTML pages as Telegram notices. The HTML is still
+        # scanned and used for discovery/classification, but delivery requires a
+        # separately discovered PDF/image whose contents were actually read.
+        attachment_ok, attachment_reason = _attachment_verification_gate(record)
+        if not attachment_ok:
+            if attachment_reason == "plain_html_without_pdf_or_image_attachment":
+                record["status"] = "ignored"
+                record["last_error"] = "Not sent: HTML-only candidate has no PDF/image attachment"
+                record["terminal_at"] = utc_now()
+                print(f"[NO-ATTACHMENT-SKIP] HTML-only candidate not sent: {str(record.get('title', ''))[:90]}", file=sys.stderr)
+            else:
+                # Keep retryable: attachment download/OCR failures must not be
+                # silently sent as a text-only notification or terminally lost.
+                record["status"] = "pending"
+                record["last_error"] = f"Attachment verification incomplete: {attachment_reason}"
+                add_review_item(state, record, "attachment_read_failed_before_send")
+                print(f"[ATTACHMENT-RETRY] Not sent until PDF/image text is readable: {str(record.get('title', ''))[:90]}", file=sys.stderr)
+            continue
         if _time_exceeded():
             print("[TIME_LIMIT] Run time exhausted — unsent notices remain ready for next run", file=sys.stderr)
             break
@@ -3921,10 +5237,10 @@ def main():
             else: print(f"[WARN] Health alert not delivered: {detail}", file=sys.stderr)
         if sent_count > 0: state["last_successful_notify_at"] = utc_now()
     except Exception as exc: print(f"[WARN] Health alert check failed: {exc}", file=sys.stderr)
-    _RUNTIME_PDF_CACHE.clear()
+    _cache_clear()
     try:
         state["stats"]["errors"] = int(state["stats"].get("errors", 0)) + run_errors
-        prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"])
+        prune_state(state, scan["retention_days"], scan["max_state_items"], scan["max_pending_attempts"], scan["max_state_bytes"], sent_retention_days=scan["sent_retention_days"], ignored_retention_days=scan["ignored_retention_days"], baseline_retention_days=scan["baseline_retention_days"], max_sent_fingerprints=scan["max_sent_fingerprints"], max_html_fingerprints=scan["max_html_fingerprints"])
         refresh_stats(state)
         atomic_save_json(STATE_FILE, state, max_bytes=scan["max_state_bytes"])
         try: print(f"[STATE] records={len(state.get('items', {}))} bytes={STATE_FILE.stat().st_size}")
@@ -3955,42 +5271,7 @@ def main():
     return 0
 
 
-def run_self_tests():
-    """Offline checks only: no website requests, Telegram sends, Gemini calls, or state writes."""
-    checks = []
-    def check(name, condition):
-        if not condition:
-            raise AssertionError(name)
-        checks.append(name)
-
-    cfg = get_config()
-    sites = cfg.get("websites", [])
-    ids = [site.get("id") for site in sites]
-    check("config_has_enabled_websites", len(sites) > 0)
-    check("site_ids_are_unique", len(ids) == len(set(ids)))
-    check("all_site_urls_are_http", all(is_http_url(site.get("url", "")) for site in sites))
-    check("vbu_site_configured", "vbu-hazaribagh" in ids)
-    check("rims_site_configured", "rims-ranchi" in ids)
-    check("aisect_site_configured", "aisect-university" in ids)
-    check("diagnostics_enabled_for_vbu", next(x for x in sites if x["id"] == "vbu-hazaribagh").get("diagnostics") is True)
-    check("diagnostics_enabled_for_rims", next(x for x in sites if x["id"] == "rims-ranchi").get("diagnostics") is True)
-    check("diagnostics_enabled_for_aisect", next(x for x in sites if x["id"] == "aisect-university").get("diagnostics") is True)
-    check("canonical_url_keeps_https", canonical_url("https://example.com/path") == "https://example.com/path")
-    check("pdf_url_detection", is_pdf("https://example.com/notice.pdf"))
-    check("non_pdf_url_detection", not is_pdf("https://example.com/notice.html"))
-    check("empty_page_detection", _is_empty_page_text("<html><body>No records found</body></html>"))
-    check("nonempty_page_detection", not _is_empty_page_text("<html><body>Notice</body></html>"))
-    print(f"[SELF-TEST] PASS: {len(checks)} offline checks; no websites, Telegram messages, Gemini calls, or state writes used.")
-    for name in checks:
-        print(f"[SELF-TEST] PASS {name}")
-    return 0
-
-
 if __name__ == "__main__":
-    if "--test" in sys.argv[1:]:
-        try:
-            raise SystemExit(run_self_tests())
-        except Exception as exc:
-            print(f"[SELF-TEST] FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
-            raise SystemExit(1)
+    if "--test" in sys.argv:
+        raise SystemExit(run_self_tests())
     raise SystemExit(main())
