@@ -4622,6 +4622,24 @@ def _is_non_notice_pdf(record):
     return not any(kw in combined for kw in _NOTICE_KEYWORDS)
 
 
+def _attachment_priority(record):
+    """Global queue priority: PDF attachments first, direct images second, HTML-only last.
+
+    HTML pages are still fetched and parsed during discovery. This priority only
+    controls which discovered pending records receive the limited processing
+    budget first; it does not skip HTML discovery or notice-link extraction.
+    """
+    url = str(record.get("url", "") or "")
+    path = urlparse(url).path.casefold()
+    is_image = bool(record.get("is_image")) or path.endswith((".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif"))
+    is_pdf = bool(record.get("is_pdf")) or _looks_like_pdf_url(url) or path.endswith(".pdf")
+    if is_pdf:
+        return 2
+    if is_image:
+        return 1
+    return 0
+
+
 def _should_fetch_pdf(record):
     if record.get("pdf_extracted") or record.get("pdf_text"): return False
     if int(record.get("pdf_attempts", 0)) >= MAX_PDF_ATTEMPTS: return False
@@ -4963,6 +4981,16 @@ def run_self_tests():
     check(_attachment_verification_gate(readable_image)[0] is True,
           "Readable image OCR was incorrectly blocked")
 
+    # Attachment-first global queue priority: PDF > image > HTML-only.
+    priority_pdf = {"url": "https://example.edu/notices/exam.pdf", "title": "Exam Notice", "is_pdf": True}
+    priority_image = {"url": "https://example.edu/notices/admit-card.jpg", "title": "Admit Card", "is_image": True}
+    priority_html = {"url": "https://example.edu/notices/exam", "title": "Exam Notice", "is_pdf": False, "is_image": False}
+    check(_attachment_priority(priority_pdf) == 2, "PDF attachment did not receive highest queue priority")
+    check(_attachment_priority(priority_image) == 1, "Image attachment did not receive second queue priority")
+    check(_attachment_priority(priority_html) == 0, "HTML-only candidate did not receive lower attachment priority")
+    check(_attachment_priority(priority_pdf) > _attachment_priority(priority_html), "PDF priority was not higher than HTML-only")
+    check(_attachment_priority(priority_image) > _attachment_priority(priority_html), "Image priority was not higher than HTML-only")
+
     check(_diagnostic_category("HTTP 403 Forbidden") == "http_403_forbidden",
           "Global failure diagnostic did not classify HTTP 403")
     check(_diagnostic_category("403 Client Error: Forbidden for url") == "http_403_forbidden",
@@ -5297,7 +5325,25 @@ def main():
     pending = _safe_pending
     state["initialized"] = all(site_state(state, site["id"])["baseline_complete"] for site in cfg["websites"])
     pending = list({iid: record for iid, record in pending}.items())
-    pending.sort(key=lambda pair: pending_priority(pair[1], scan["keywords"]), reverse=True)
+    # Attachment-first scheduling prevents HTML-only candidates with high title
+    # scores from consuming the run budget before their PDF/image notices.
+    # HTML pages are still scanned normally to discover links and metadata.
+    pending.sort(
+        key=lambda pair: (
+            _attachment_priority(pair[1]),
+            pending_priority(pair[1], scan["keywords"]),
+        ),
+        reverse=True,
+    )
+    _priority_counts = {"pdf": 0, "image": 0, "html_only": 0}
+    for _iid, _record in pending:
+        _p = _attachment_priority(_record)
+        _priority_counts["pdf" if _p == 2 else "image" if _p == 1 else "html_only"] += 1
+    print(
+        f"[PENDING-PRIORITY] pdf={_priority_counts['pdf']} image={_priority_counts['image']} "
+        f"html_only={_priority_counts['html_only']} order=pdf>image>html_only",
+        file=sys.stderr,
+    )
     max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 60)
     pending = pending[:max_items_this_run]
 
