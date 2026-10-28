@@ -1115,6 +1115,15 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
             try:
                 context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=bool(ignore_https_errors), extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
                 page = context.new_page()
+                try:
+                    page.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                        Object.defineProperty(navigator, 'languages', {get: () => ['en-IN', 'en', 'hi']});
+                        window.chrome = { runtime: {} };
+                    """)
+                except Exception as exc:
+                    print(f"[WARN] Stealth init failed: {exc}", file=sys.stderr)
                 page.set_default_timeout(timeout_ms)
                 try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                 except Exception:
@@ -3367,6 +3376,8 @@ def discover_site(session, site, scan):
                 response = session.get(page, timeout=timeout, allow_redirects=True, verify=verify_ssl)
                 final_url = canonical_url(response.url)
                 content_type = response.headers.get("content-type", "").lower()
+                if site.get("id") == "rims-ranchi":
+                    print(f"[RIMS-STATUS] url={page[:120]} http={response.status_code} ct={(content_type or '')[:40]} bytes={len(response.content)}", file=sys.stderr)
             except requests.RequestException as request_exc:
                 can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
                 if can_browser_retry:
@@ -3438,6 +3449,9 @@ def discover_site(session, site, scan):
                 continue
 
             found = extract_candidates(response_text, final_url, site, effective_scan)
+            if site.get("id") == "vbu-hazaribagh":
+                pdf_count = sum(1 for x in found if x.get("is_pdf"))
+                print(f"[VBU-PAGE] url={page[:120]} candidates={len(found)} pdf_candidates={pdf_count} html_chars={len(response_text)}", file=sys.stderr)
             for row in found:
                 old = candidates.get(row["url"])
                 if old is None or row["score"] > old["score"]: candidates[row["url"]] = row
@@ -3459,7 +3473,12 @@ def discover_site(session, site, scan):
                 if any(kw in haystack for kw in discovery_keywords if kw):
                     queue.append(href)
                     if len(queue) >= total_budget * 2: break
-        except Exception as exc: errors.append(f"{page}: {clean_text(str(exc), 250)}")
+        except Exception as exc:
+            detail = clean_text(str(exc), 350)
+            errors.append(f"{page}: {detail}")
+            print(f"[SCAN-ERR] id={site.get('id','unknown')} url={page[:160]} error={detail}", file=sys.stderr)
+            if site.get("id") == "rims-ranchi":
+                print(f"[RIMS-FAIL] url={page[:150]} error_type={type(exc).__name__} error={detail[:250]}", file=sys.stderr)
 
     values = list(candidates.values())
     def _final_sort_key(item):
@@ -4662,6 +4681,9 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
             except Exception: content, text, ocr_used, method, raw_pdf_text = None, "", False, "error", ""
             record["pdf_attempts"] = int(record.get("pdf_attempts", 0)) + 1
             record["pdf_method"] = method
+            if record.get("site_id") == "vbu-hazaribagh":
+                text_len = len(text) if text else 0
+                print(f"[VBU-PDF] url={str(record.get('url',''))[:120]} attempt={record['pdf_attempts']}/{MAX_PDF_ATTEMPTS} method={method} text_chars={text_len} title={str(record.get('title',''))[:60]!r}", file=sys.stderr)
             if content:
                 try:
                     new_hash = _pdf_content_fingerprint(content)
@@ -5263,6 +5285,8 @@ def main():
             )
             continue
 
+        if record.get("site_id") == "vbu-hazaribagh":
+            print(f"[VBU-SEND-CHECK] url={str(record.get('url',''))[:120]} title={str(record.get('title',''))[:60]!r} pdf_attempts={record.get('pdf_attempts',0)} pdf_extracted={record.get('pdf_extracted')} text_len={len(record.get('pdf_text','') or '')}", file=sys.stderr)
         attachment_ok, attachment_reason = _attachment_verification_gate(record)
         if not attachment_ok:
             if attachment_reason == "plain_html_without_pdf_or_image_attachment":
@@ -5384,6 +5408,14 @@ def main():
         print("[PENDING-BREAKDOWN] " + "; ".join(f"{k}={v}" for k, v in _pending_reasons.most_common(8)))
     if _oldest_pending:
         print(f"[PENDING-OLDEST] first_seen={_oldest_pending.isoformat()} age_days={(datetime.now(timezone.utc)-_oldest_pending).total_seconds()/86400:.1f}")
+    # VBU specific pending reasons
+    _vbu_pending = [r for r in state.get("items", {}).values() if isinstance(r, dict) and r.get("status") == "pending" and r.get("site_id") == "vbu-hazaribagh"]
+    for _r in _vbu_pending[:15]:
+        print(f"[VBU-PENDING] url={str(_r.get('url',''))[:110]} title={str(_r.get('title',''))[:60]!r} reason={str(_r.get('last_error',''))[:120]!r} attempts={_r.get('attempts',0)} pdf_attempts={_r.get('pdf_attempts',0)} method={_r.get('pdf_method','')}", file=sys.stderr)
+    # RIMS specific pending reasons
+    _rims_pending = [r for r in state.get("items", {}).values() if isinstance(r, dict) and r.get("status") == "pending" and r.get("site_id") == "rims-ranchi"]
+    for _r in _rims_pending[:15]:
+        print(f"[RIMS-PENDING] url={str(_r.get('url',''))[:110]} title={str(_r.get('title',''))[:60]!r} reason={str(_r.get('last_error',''))[:120]!r}", file=sys.stderr)
     print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} errors_this_run={run_errors} partial_errors_this_run={partial_errors_this_run} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects_total={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders_total={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
     return 0
 
