@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Advanced date/revision review + final PDF dedup guard + undated old-batch send gate (2026-10-27)
+# Conditional stealth (2026-10-28): stealth args + init script only when site.use_stealth_on_block=true
 import base64
 import hashlib
 import html
@@ -1098,7 +1099,7 @@ def _html_looks_like_js_pdf_viewer(html_text):
     return any(m in lower for m in _JS_PDF_VIEWER_MARKERS)
 
 
-def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_selector=None, wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None, ignore_https_errors=False):
+def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_selector=None, wait_after_ms=None, scroll_bottom=False, selector_timeout_ms=None, ignore_https_errors=False, use_stealth=False):
     if not _PLAYWRIGHT_AVAILABLE or not JS_RENDER_ENABLED: return None, url, "playwright_disabled"
     timeout_ms = max(1000, int(timeout_ms or JS_RENDER_TIMEOUT_MS))
     wait_until = wait_until or JS_WAIT_UNTIL
@@ -1111,19 +1112,23 @@ def _render_with_playwright(url, timeout_ms=None, wait_until=None, wait_for_sele
     except (TypeError, ValueError, OverflowError): selector_timeout_ms = 10000
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"])
+            launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            if use_stealth:
+                launch_args.append("--disable-blink-features=AutomationControlled")
+            browser = pw.chromium.launch(headless=True, args=launch_args)
             try:
                 context = browser.new_context(user_agent=JS_RENDER_USER_AGENT, locale="en-IN", viewport={"width": 1366, "height": 900}, java_script_enabled=True, ignore_https_errors=bool(ignore_https_errors), extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"})
                 page = context.new_page()
-                try:
-                    page.add_init_script("""
-                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                        Object.defineProperty(navigator, 'languages', {get: () => ['en-IN', 'en', 'hi']});
-                        window.chrome = { runtime: {} };
-                    """)
-                except Exception as exc:
-                    print(f"[WARN] Stealth init failed: {exc}", file=sys.stderr)
+                if use_stealth:
+                    try:
+                        page.add_init_script("""
+                            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                            Object.defineProperty(navigator, 'languages', {get: () => ['en-IN', 'en', 'hi']});
+                            window.chrome = { runtime: {} };
+                        """)
+                    except Exception as exc:
+                        print(f"[WARN] Stealth init failed: {exc}", file=sys.stderr)
                 page.set_default_timeout(timeout_ms)
                 try: page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                 except Exception:
@@ -2648,6 +2653,11 @@ def get_config():
         js_mode = str(site.get("js_render", "auto")).strip().lower()
         if js_mode not in ("auto", "always", "never"): js_mode = "auto"
         site["js_render"] = js_mode
+        raw_stealth = site.get("use_stealth_on_block", False)
+        if isinstance(raw_stealth, str):
+            site["use_stealth_on_block"] = raw_stealth.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            site["use_stealth_on_block"] = bool(raw_stealth)
         try: site["request_timeout_seconds"] = max(5, min(180, int(site.get("request_timeout_seconds", scan["request_timeout_seconds"]))))
         except (TypeError, ValueError, OverflowError): site["request_timeout_seconds"] = scan["request_timeout_seconds"]
         try: site["baseline_max_errors"] = max(0, min(50, int(site.get("baseline_max_errors", scan["baseline_max_errors"]))))
@@ -3303,6 +3313,83 @@ def _robots_allowed(session, url, timeout):
     except Exception: return True
 
 
+def _diagnostic_category(reason, pdf_method="", failure_stage=""):
+    """Classify failures globally, using structured stage/method hints when text is absent."""
+    text = str(reason or "").casefold().strip()
+    method = str(pdf_method or "").casefold().strip()
+    stage = str(failure_stage or "").casefold().strip()
+    combined = " ".join(part for part in (text, method, stage) if part)
+
+    # Structured method values are often more reliable than a blank last_error.
+    # Support both method tokens (http_403) and Requests-style errors (403 Client Error).
+    http_match = re.search(r"http[_\s-]?(\d{3})", combined)
+    if not http_match:
+        http_match = re.search(r"\b(403|429|[45]\d\d)\b(?=\s+(?:client|server) error|\s+forbidden|\s+too many requests|$)", combined)
+    if http_match:
+        status = int(http_match.group(1))
+        if status == 403: return "http_403_forbidden"
+        if status == 429: return "http_429_rate_limited"
+        if 500 <= status <= 599: return "http_5xx_server_error"
+        if 400 <= status <= 499: return "http_4xx_client_error"
+    if any(x in combined for x in ("image_ocr_no_text", "pdf_extract_empty", "ocr_no_text", "no usable text", "no text extracted")):
+        return "pdf_extraction_empty"
+    if any(x in combined for x in ("size_limit", "size limit", "too large", "content_length_exceeded")):
+        return "pdf_size_limit"
+    if any(x in combined for x in ("time_limit", "deadline exceeded", "run deadline")):
+        return "request_timeout"
+    if any(x in combined for x in ("playwright_disabled", "playwright is not installed", "browser_type.launch", "playwright unavailable")):
+        return "playwright_unavailable"
+    if any(x in combined for x in ("playwright_nav_error", "playwright_content_error", "playwright_error", "js-fail", "waf-retry-fail", "javascript_render")):
+        return "javascript_render_failed"
+
+    rules = (
+        ("dns_or_connection", ("connectionerror", "name or service not known", "temporary failure in name resolution", "getaddrinfo failed", "connection refused", "connection reset", "failed to establish a new connection")),
+        ("request_timeout", ("timeout", "timed out", "timeouterror", "read timed out", "connect timeout")),
+        ("tls_certificate", ("sslerror", "certificate verify failed", "tls", "wrong version number")),
+        ("robots_or_policy", ("robots.txt", "robots disallow", "not allowed by robots", "blocked by policy")),
+        ("pdf_download_or_parse", ("pdf", "ocr", "attachment", "document", "download_error", "not_pdf", "invalid_pdf")),
+        ("configuration_or_state", ("configuration", "websites.json", "state.json", "invalid site", "jsondecodeerror")),
+    )
+    for category, markers in rules:
+        if any(marker in combined for marker in markers):
+            return category
+    if stage in {"pdf_download", "pdf_extraction", "image_download", "image_ocr"}:
+        return "pdf_download_or_parse"
+    return "other_or_unclassified"
+
+
+def _diagnostic_stage(reason, pdf_method="", failure_stage=""):
+    """Return the most actionable stage label without assuming a stage from site ID."""
+    if failure_stage:
+        return str(failure_stage)[:60]
+    text = f"{reason or ''} {pdf_method or ''}".casefold()
+    if any(x in text for x in ("image_http_", "image_size_limit", "not_image")):
+        return "image_download"
+    if "image_ocr" in text:
+        return "image_ocr"
+    if "http_" in text or "download_error" in text or "size_limit" in text:
+        return "pdf_download" if any(x in text for x in ("pdf", "http_", "download_error", "size_limit")) else "download"
+    if any(x in text for x in ("ocr", "plumber", "extract_empty", "no text")):
+        return "pdf_extraction"
+    if any(x in text for x in ("playwright", "javascript", "js-fail")):
+        return "javascript_render"
+    if any(x in text for x in ("telegram", "bot token", "chat not found")):
+        return "notification_delivery"
+    return "discovery_or_processing"
+
+
+def _set_failure_diagnostic(record, stage, reason, pdf_method=""):
+    """Persist compact structured diagnostics without overwriting business last_error."""
+    record["last_failure_stage"] = str(stage or "unknown")[:60]
+    record["last_failure_reason"] = _safe_error_detail(reason, 350)
+    record["last_failure_category"] = _diagnostic_category(reason, pdf_method, stage)
+
+
+def _safe_error_detail(value, limit=500):
+    """Keep diagnostic messages useful while avoiding multiline/log injection."""
+    cleaned = clean_text(str(value or "No error detail supplied"), limit)
+    return cleaned.replace("\r", " ").replace("\n", " ").replace("\t", " ").replace("\x00", " ")
+
 def discover_site(session, site, scan):
     base_url = site["url"]
     timeout = int(site.get("request_timeout_seconds", scan["request_timeout_seconds"]))
@@ -3312,6 +3399,8 @@ def discover_site(session, site, scan):
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
     max_pagination_per_archive = scan.get("max_pagination_per_archive", 3)
     discovery_keywords = list(dict.fromkeys(scan["discovery_keywords"] + site.get("discovery_keywords", []) + scan["keywords"]))
+    # Conditional stealth: only enable when site explicitly opts in.
+    use_stealth_for_site = bool(site.get("use_stealth_on_block", False))
 
     direct_urls = []
     for raw_url in (site.get("direct_urls") or []):
@@ -3382,7 +3471,7 @@ def discover_site(session, site, scan):
                 can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
                 if can_browser_retry:
                     print(f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
@@ -3396,7 +3485,7 @@ def discover_site(session, site, scan):
             if response is not None and response.status_code in (403, 503):
                 if JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE:
                     print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
@@ -3433,7 +3522,7 @@ def discover_site(session, site, scan):
 
             if (should_render_js and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE):
                 print(f"[JS-RENDER] {page} (mode={js_mode})", file=sys.stderr)
-                rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True))
+                rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
                 js_render_count += 1
                 if rendered_html:
                     response_text = rendered_html
@@ -3449,9 +3538,8 @@ def discover_site(session, site, scan):
                 continue
 
             found = extract_candidates(response_text, final_url, site, effective_scan)
-            if site.get("id") == "vbu-hazaribagh":
-                pdf_count = sum(1 for x in found if x.get("is_pdf"))
-                print(f"[VBU-PAGE] url={page[:120]} candidates={len(found)} pdf_candidates={pdf_count} html_chars={len(response_text)}", file=sys.stderr)
+            pdf_count = sum(1 for x in found if x.get("is_pdf"))
+            print(f"[PAGE-RESULT] site_id={site.get('id','unknown')} url={page[:120]} candidates={len(found)} pdf_candidates={pdf_count} html_chars={len(response_text)}", file=sys.stderr)
             for row in found:
                 old = candidates.get(row["url"])
                 if old is None or row["score"] > old["score"]: candidates[row["url"]] = row
@@ -3477,8 +3565,7 @@ def discover_site(session, site, scan):
             detail = clean_text(str(exc), 350)
             errors.append(f"{page}: {detail}")
             print(f"[SCAN-ERR] id={site.get('id','unknown')} url={page[:160]} error={detail}", file=sys.stderr)
-            if site.get("id") == "rims-ranchi":
-                print(f"[RIMS-FAIL] url={page[:150]} error_type={type(exc).__name__} error={detail[:250]}", file=sys.stderr)
+            print(f"[PAGE-FAILURE-DIAGNOSTIC] site_id={site.get('id','unknown')} category={_diagnostic_category(detail)} exception={type(exc).__name__} url={page[:150]} reason={_safe_error_detail(detail, 300)}", file=sys.stderr)
 
     values = list(candidates.values())
     def _final_sort_key(item):
@@ -4615,6 +4702,7 @@ def _fetch_images_for_batch(batch, scan, send_deadline=None):
             try:
                 if response.status_code != 200:
                     record["pdf_method"] = f"image_http_{response.status_code}"
+                    _set_failure_diagnostic(record, "image_download", f"image_download:{record['pdf_method']}", record["pdf_method"])
                     print(f"[WARN] Image download HTTP {response.status_code}: {record.get('url','')[:100]}", file=sys.stderr)
                     continue
                 content_type = (response.headers.get("Content-Type") or "").lower()
@@ -4630,9 +4718,11 @@ def _fetch_images_for_batch(batch, scan, send_deadline=None):
                 image_bytes = b"".join(chunks)
                 if not image_bytes or total > 12 * 1024 * 1024:
                     record["pdf_method"] = "image_size_limit"
+                    _set_failure_diagnostic(record, "image_download", "image_download:image_size_limit", record["pdf_method"])
                     continue
                 if "image/" not in content_type and not image_bytes.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF8", b"RIFF")):
                     record["pdf_method"] = "not_image"
+                    _set_failure_diagnostic(record, "image_download", "image_download:not_image_content", record["pdf_method"])
                     continue
             finally:
                 response.close()
@@ -4648,12 +4738,15 @@ def _fetch_images_for_batch(batch, scan, send_deadline=None):
                 record["pdf_extracted"] = True
                 record["ocr_used"] = True
                 record["pdf_method"] = method
+                record.pop("last_failure_stage", None); record.pop("last_failure_reason", None); record.pop("last_failure_category", None)
                 print(f"[INFO] {method} succeeded ({len(text)} chars): {record.get('url','')[:80]}", file=sys.stderr)
             else:
                 record["pdf_method"] = "image_ocr_no_text"
+                _set_failure_diagnostic(record, "image_ocr", "pdf_extract_empty:image_ocr_no_text", record["pdf_method"])
                 print(f"[WARN] No usable text extracted from image: {record.get('url','')[:100]}", file=sys.stderr)
         except Exception as exc:
             record["pdf_method"] = "image_ocr_error"
+            _set_failure_diagnostic(record, "image_ocr", f"image_ocr_error:{type(exc).__name__}:{exc}", record["pdf_method"])
             print(f"[WARN] Image OCR skipped safely: {exc}", file=sys.stderr)
 
 
@@ -4681,9 +4774,16 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
             except Exception: content, text, ocr_used, method, raw_pdf_text = None, "", False, "error", ""
             record["pdf_attempts"] = int(record.get("pdf_attempts", 0)) + 1
             record["pdf_method"] = method
-            if record.get("site_id") == "vbu-hazaribagh":
-                text_len = len(text) if text else 0
-                print(f"[VBU-PDF] url={str(record.get('url',''))[:120]} attempt={record['pdf_attempts']}/{MAX_PDF_ATTEMPTS} method={method} text_chars={text_len} title={str(record.get('title',''))[:60]!r}", file=sys.stderr)
+            text_len = len(text) if text else 0
+            print(f"[PDF-RESULT] site_id={record.get('site_id','unknown')} url={str(record.get('url',''))[:120]} attempt={record['pdf_attempts']}/{MAX_PDF_ATTEMPTS} method={method or 'unknown'} text_chars={text_len} title={str(record.get('title',''))[:60]!r}", file=sys.stderr)
+            if not content:
+                _set_failure_diagnostic(record, "pdf_download", f"pdf_download:{method or 'no_content'}", method)
+            elif not text or len(str(text).strip()) < 20:
+                _set_failure_diagnostic(record, "pdf_extraction", f"pdf_extract_empty:{method or 'unknown'}", method)
+            else:
+                record.pop("last_failure_stage", None)
+                record.pop("last_failure_reason", None)
+                record.pop("last_failure_category", None)
             if content:
                 try:
                     new_hash = _pdf_content_fingerprint(content)
@@ -4863,6 +4963,38 @@ def run_self_tests():
     check(_attachment_verification_gate(readable_image)[0] is True,
           "Readable image OCR was incorrectly blocked")
 
+    check(_diagnostic_category("HTTP 403 Forbidden") == "http_403_forbidden",
+          "Global failure diagnostic did not classify HTTP 403")
+    check(_diagnostic_category("403 Client Error: Forbidden for url") == "http_403_forbidden",
+          "Requests-style HTTP 403 error was not classified")
+    check(_diagnostic_category("429 Client Error: Too Many Requests") == "http_429_rate_limited",
+          "Requests-style HTTP 429 error was not classified")
+    check(_diagnostic_category("503 Server Error: Service Unavailable") == "http_5xx_server_error",
+          "Requests-style HTTP 5xx error was not classified")
+    check(_diagnostic_category("playwright_nav_error:TimeoutError") == "javascript_render_failed",
+          "Global failure diagnostic did not classify Playwright failure")
+    check(_diagnostic_category("ConnectionError: connection refused") == "dns_or_connection",
+          "Global failure diagnostic did not classify connection failure")
+    check(_diagnostic_category("No error recorded", "http_403") == "http_403_forbidden",
+          "PDF method hint did not classify blank-error HTTP 403")
+    check(_diagnostic_category("", "image_http_429") == "http_429_rate_limited",
+          "Image method hint did not classify HTTP 429")
+    check(_diagnostic_category("", "http_503") == "http_5xx_server_error",
+          "PDF method hint did not classify HTTP 5xx")
+    check(_diagnostic_category("", "http_404") == "http_4xx_client_error",
+          "PDF method hint did not classify HTTP 4xx")
+    check(_diagnostic_category("No error recorded", "image_ocr_no_text") == "pdf_extraction_empty",
+          "Empty OCR result was not categorized separately")
+    check(_diagnostic_category("", "image_size_limit") == "pdf_size_limit",
+          "Attachment size limit was not categorized separately")
+    check(_diagnostic_stage("", "image_ocr_no_text") == "image_ocr",
+          "Image OCR failure stage was not inferred")
+    check(_diagnostic_stage("", "image_http_403") == "image_download",
+          "Image download failure stage was not inferred")
+    diag_record = {}
+    _set_failure_diagnostic(diag_record, "pdf_download", "pdf_download:http_403", "http_403")
+    check(diag_record.get("last_failure_category") == "http_403_forbidden" and diag_record.get("last_failure_stage") == "pdf_download",
+          "Structured failure diagnostics were not persisted")
     print(f"[SELF-TEST] PASS: {checks} offline regression checks; no websites or Telegram messages used.")
     return 0
 
@@ -4966,20 +5098,29 @@ def main():
                     if errors:
                         state["metrics"]["parse_errors"] = int(state["metrics"].get("parse_errors", 0)) + len(errors)
                         partial_errors_this_run += len(errors)
+                    _partial_categories = Counter(_diagnostic_category(err) for err in errors)
                     print(f"[OK] {site['name']}: {len(candidates)} candidate(s), {len(errors)} partial error(s)")
+                    if errors:
+                        print(f"[SITE-PARTIAL-FAILURE] name={site['name']} site_id={sid} category_counts=" +
+                              ",".join(f"{k}:{v}" for k, v in _partial_categories.most_common()) +
+                              " examples=" + " | ".join(_safe_error_detail(e, 180) for e in errors[:4]), file=sys.stderr)
                 else:
                     run_errors += 1
                     state["metrics"]["site_scan_failure"][sid] = state["metrics"]["site_scan_failure"].get(sid, 0) + 1
                     mark_site_failure(state, sid, "; ".join(errors) or "No page could be fetched")
-                    print(f"[ERROR] {site['name']}: no page could be fetched", file=sys.stderr)
-                    for err in errors[:5]: print(f"    ↳ {clean_text(str(err), 400)}", file=sys.stderr)
+                    _categories = Counter(_diagnostic_category(err) for err in errors)
+                    print(f"[SITE-FAILURE] name={site['name']} site_id={sid} category_counts=" +
+                          (",".join(f"{k}:{v}" for k, v in _categories.most_common()) or "no_error_details") +
+                          f" reason={_safe_error_detail('; '.join(errors) or 'No page could be fetched', 700)}", file=sys.stderr)
+                    for err in errors[:10]:
+                        print(f"    ↳ category={_diagnostic_category(err)} detail={_safe_error_detail(err, 400)}", file=sys.stderr)
                     if len(errors) > 5: print(f"    ↳ ... and {len(errors) - 5} more error(s)", file=sys.stderr)
             except Exception as exc:
                 run_errors += 1
                 state["metrics"]["site_scan_failure"][site["id"]] = state["metrics"]["site_scan_failure"].get(site["id"], 0) + 1
                 results[site["id"]] = {"candidates": [], "errors": [str(exc)], "success": False}
                 mark_site_failure(state, site["id"], str(exc))
-                print(f"[ERROR] {site['name']}: {exc}", file=sys.stderr)
+                print(f"[SITE-FAILURE] name={site['name']} site_id={site['id']} category={_diagnostic_category(exc)} exception={type(exc).__name__} reason={_safe_error_detail(exc, 700)}", file=sys.stderr)
 
     with _JS_RENDER_COUNT_LOCK: state.setdefault("metrics", {})["js_renders"] = _JS_RENDER_COUNT
     try:
@@ -5285,8 +5426,7 @@ def main():
             )
             continue
 
-        if record.get("site_id") == "vbu-hazaribagh":
-            print(f"[VBU-SEND-CHECK] url={str(record.get('url',''))[:120]} title={str(record.get('title',''))[:60]!r} pdf_attempts={record.get('pdf_attempts',0)} pdf_extracted={record.get('pdf_extracted')} text_len={len(record.get('pdf_text','') or '')}", file=sys.stderr)
+        print(f"[ATTACHMENT-DIAGNOSTIC] site_id={record.get('site_id','unknown')} url={str(record.get('url',''))[:120]} pdf_attempts={record.get('pdf_attempts',0)} extracted={bool(record.get('pdf_extracted'))} text_chars={len(record.get('pdf_text','') or '')}", file=sys.stderr)
         attachment_ok, attachment_reason = _attachment_verification_gate(record)
         if not attachment_ok:
             if attachment_reason == "plain_html_without_pdf_or_image_attachment":
@@ -5408,15 +5548,39 @@ def main():
         print("[PENDING-BREAKDOWN] " + "; ".join(f"{k}={v}" for k, v in _pending_reasons.most_common(8)))
     if _oldest_pending:
         print(f"[PENDING-OLDEST] first_seen={_oldest_pending.isoformat()} age_days={(datetime.now(timezone.utc)-_oldest_pending).total_seconds()/86400:.1f}")
-    # VBU specific pending reasons
-    _vbu_pending = [r for r in state.get("items", {}).values() if isinstance(r, dict) and r.get("status") == "pending" and r.get("site_id") == "vbu-hazaribagh"]
-    for _r in _vbu_pending[:15]:
-        print(f"[VBU-PENDING] url={str(_r.get('url',''))[:110]} title={str(_r.get('title',''))[:60]!r} reason={str(_r.get('last_error',''))[:120]!r} attempts={_r.get('attempts',0)} pdf_attempts={_r.get('pdf_attempts',0)} method={_r.get('pdf_method','')}", file=sys.stderr)
-    # RIMS specific pending reasons
-    _rims_pending = [r for r in state.get("items", {}).values() if isinstance(r, dict) and r.get("status") == "pending" and r.get("site_id") == "rims-ranchi"]
-    for _r in _rims_pending[:15]:
-        print(f"[RIMS-PENDING] url={str(_r.get('url',''))[:110]} title={str(_r.get('title',''))[:60]!r} reason={str(_r.get('last_error',''))[:120]!r}", file=sys.stderr)
-    print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} errors_this_run={run_errors} partial_errors_this_run={partial_errors_this_run} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects_total={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders_total={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
+    # Global pending diagnostics: identical format for every configured university/site.
+    _pending_by_site = {}
+    for _iid, _r in state.get("items", {}).items():
+        if not isinstance(_r, dict) or _r.get("status") != "pending":
+            continue
+        _sid = str(_r.get("site_id") or "unknown")
+        _pending_by_site.setdefault(_sid, []).append((_iid, _r))
+    for _sid, _rows in sorted(_pending_by_site.items()):
+        _reason_counts = Counter(
+            _r.get("last_failure_category") or _diagnostic_category(
+                _r.get("last_failure_reason") or _r.get("last_error"),
+                _r.get("pdf_method", ""), _r.get("last_failure_stage", "")
+            ) for _, _r in _rows
+        )
+        _stage_counts = Counter(_r.get("last_failure_stage") or _diagnostic_stage(
+            _r.get("last_failure_reason") or _r.get("last_error"), _r.get("pdf_method", "")
+        ) for _, _r in _rows)
+        print(f"[SITE-PENDING-DIAGNOSTIC] site_id={_sid} pending={len(_rows)} categories=" +
+              ",".join(f"{_k}:{_v}" for _k, _v in _reason_counts.most_common()) +
+              " stages=" + ",".join(f"{_k}:{_v}" for _k, _v in _stage_counts.most_common()), file=sys.stderr)
+        for _iid, _r in sorted(_rows, key=lambda pair: str(pair[1].get("first_seen") or ""))[:10]:
+            _reason = _safe_error_detail(_r.get("last_failure_reason") or _r.get("last_error") or "No error recorded", 240)
+            _method = str(_r.get("pdf_method") or "unknown")
+            _stage = _r.get("last_failure_stage") or _diagnostic_stage(_reason, _method)
+            _category = _r.get("last_failure_category") or _diagnostic_category(_reason, _method, _stage)
+            print(f"[PENDING-ITEM-DIAGNOSTIC] site_id={_sid} item_id={_iid} url={str(_r.get('url',''))[:140]} "
+                  f"failure_stage={_stage} reason_category={_category} reason={_reason!r} "
+                  f"attempts={_r.get('attempts',0)} pdf_attempts={_r.get('pdf_attempts',0)} "
+                  f"pdf_method={_method} extracted={bool(_r.get('pdf_extracted'))} "
+                  f"telegram_attempts={_r.get('telegram_attempts',0)}", file=sys.stderr)
+    _site_failures = sum(1 for _r in results.values() if not _r.get("success"))
+    _partial_site_errors = sum(len(_r.get("errors", [])) for _r in results.values())
+    print(f"[DONE] initialized={state['initialized']} sites={len(cfg['websites'])} sent_this_run={sent_count} pending={state['stats']['pending']} failed_sites={_site_failures} site_page_errors={_partial_site_errors} errors_this_run={run_errors} partial_errors_this_run={partial_errors_this_run} review_open={sum(1 for x in state.get('review_queue', {}).values() if x.get('status') == 'open')} duplicate_rejects_total={state.get('metrics', {}).get('duplicate_rejects', 0)} js_renders_total={state.get('metrics', {}).get('js_renders', 0)} elapsed={elapsed:.1f}s")
     return 0
 
 
