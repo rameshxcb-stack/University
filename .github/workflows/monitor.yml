@@ -1,414 +1,119 @@
-{
-  "scan": {
-    "request_timeout_seconds": 45,
-    "max_workers": 5,
-    "max_items_per_site": 150,
-    "max_discovery_pages_per_site": 20,
-    "max_archive_pages_per_site": 25,
-    "max_pagination_per_archive": 4,
-    "max_new_items_per_run": 25,
-    "gemini_batch_size": 3,
-    "gemini_max_calls_per_run": 20,
-    "retention_days": 60,
-    "sent_retention_days": 90,
-    "ignored_retention_days": 30,
-    "baseline_retention_days": 60,
-    "domain_delay_seconds": 0.5,
-    "max_state_items": 4000,
-    "max_state_bytes": 8000000,
-    "max_pending_attempts": 500,
-    "stale_notice_days": 15,
-    "site_alert_threshold": 3,
-    "site_alert_cooldown_hours": 6,
-    "keywords": [
-      "admission",
-      "result",
-      "admit card",
-      "answer key",
-      "examination",
-      "exam",
-      "semester",
-      "revaluation",
-      "migration",
-      "certificate",
-      "scholarship",
-      "fee",
-      "syllabus",
-      "timetable",
-      "counselling",
-      "recruitment",
-      "vacancy",
-      "tender",
-      "notice",
-      "notification",
-      "placement",
-      "hostel",
-      "convocation",
-      "registration",
-      "enrollment",
-      "e-kalyan",
-      "phd",
-      "research",
-      "प्रवेश",
-      "परिणाम",
-      "प्रवेश पत्र",
-      "उत्तर कुंजी",
-      "परीक्षा",
-      "सेमेस्टर",
-      "पुनर्मूल्यांकन",
-      "माइग्रेशन",
-      "प्रमाण पत्र",
-      "छात्रवृत्ति",
-      "शुल्क",
-      "पाठ्यक्रम",
-      "समय सारिणी",
-      "काउंसलिंग",
-      "भर्ती",
-      "निविदा",
-      "सूचना",
-      "अधिसूचना",
-      "प्लेसमेंट",
-      "छात्रावास"
-    ],
-    "discovery_keywords": [
-      "notice",
-      "notification",
-      "recruitment",
-      "result",
-      "admit",
-      "exam",
-      "admission",
-      "tender",
-      "circular",
-      "announcement",
-      "syllabus",
-      "timetable",
-      "revaluation",
-      "migration",
-      "scholarship",
-      "registration",
-      "hostel",
-      "convocation",
-      "placement",
-      "e-kalyan",
-      "सूचना",
-      "भर्ती",
-      "परिणाम",
-      "नोटिस",
-      "विज्ञापन",
-      "अधिसूचना",
-      "प्रवेश",
-      "परीक्षा",
-      "छात्रवृत्ति",
-      "पाठ्यक्रम",
-      "notices",
-      "notifications",
-      "results",
-      "exams",
-      "admissions",
-      "tenders",
-      "circulars",
-      "announcements",
-      "career",
-      "jobs",
-      "academic-calendar",
-      "holiday",
-      "holidays",
-      "counselling",
-      "counseling",
-      "seat-matrix",
-      "cutoff",
-      "prospectus",
-      "marksheet",
-      "phd",
-      "research",
-      "सूचनाएं",
-      "भर्तियां",
-      "नोटिसें",
-      "कैलेंडर",
-      "अवकाश",
-      "कार्यक्रम",
-      "समाचार",
-      "अपडेट",
-      "इवेंट",
-      "घोषणा",
-      "रिजल्ट"
-    ],
-    "sitemap_enabled": true,
-    "baseline_max_errors": 3,
-    "exclude_title_signals": [
-      "gst return",
-      "income tax",
-      "annual report",
-      "balance sheet",
-      "minutes of meeting",
-      "right to information",
-      "rti application"
-    ]
-  },
-  "websites": [
-    {
-      "id": "vbu-hazaribagh",
-      "name": "Vinoba Bhave University, Hazaribagh",
-      "url": "https://vbu.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 4500,
-      "js_wait_for_selector": "table, .notice, .notice-list, .news-list, ng-view, .ng-scope, mat-table, .mat-table",
-      "js_scroll_bottom": true,
-      "keywords": [
-        "notice",
-        "exam",
-        "result",
-        "admission",
-        "syllabus",
-        "timetable",
-        "revaluation"
-      ],
-      "discovery_keywords": [
-        "notice",
-        "exam",
-        "result",
-        "admission",
-        "syllabus",
-        "revaluation",
-        "migration"
-      ]
-    },
-    {
-      "id": "ranchi-university",
-      "name": "Ranchi University",
-      "url": "https://ranchiuniversity.ac.in/",
-      "enabled": true,
-      "js_render": "auto",
-      "keywords": [
-        "recruitment",
-        "notice",
-        "admission",
-        "exam",
-        "result"
-      ]
-    },
-    {
-      "id": "npu-daltonganj",
-      "name": "Nilamber-Pitamber University, Palamu",
-      "url": "https://npu.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "kolhan-university",
-      "name": "Kolhan University, Chaibasa",
-      "url": "https://www.kolhanuniversity.ac.in/",
-      "enabled": true,
-      "js_render": "auto",
-      "js_wait_after_ms": 3000
-    },
-    {
-      "id": "skmu-dumka",
-      "name": "Sido Kanhu Murmu University, Dumka",
-      "url": "https://skmu.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "dspmu-ranchi",
-      "name": "Dr. Shyama Prasad Mukherjee University, Ranchi",
-      "url": "https://dspmuranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "bbmku-dhanbad",
-      "name": "Binod Bihari Mahto Koylanchal University, Dhanbad",
-      "url": "https://bbmku.ac.in/",
-      "enabled": true,
-      "js_render": "auto",
-      "js_wait_after_ms": 3500
-    },
-    {
-      "id": "jwu-jamshedpur",
-      "name": "Jamshedpur Women's University",
-      "url": "https://jwu.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "bmtu-khunti",
-      "name": "Birsa Munda Tribal University, Khunti",
-      "url": "https://bmtu.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "jut-ranchi",
-      "name": "Jharkhand University of Technology, Ranchi",
-      "url": "https://jutranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "cuj-ranchi",
-      "name": "Central University of Jharkhand",
-      "url": "https://cuj.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 3500,
-      "js_wait_for_selector": "table, .notice, .news"
-    },
-    {
-      "id": "iitism-dhanbad",
-      "name": "IIT (ISM) Dhanbad",
-      "url": "https://www.iitism.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 3000
-    },
-    {
-      "id": "nitjsr",
-      "name": "NIT Jamshedpur",
-      "url": "https://nitjsr.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "iiimranchi",
-      "name": "IIM Ranchi",
-      "url": "https://www.iimranchi.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 3000
-    },
-    {
-      "id": "iiitranchi",
-      "name": "IIIT Ranchi",
-      "url": "https://iiitranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "bitmesra",
-      "name": "BIT Mesra, Ranchi",
-      "url": "https://www.bitmesra.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "bitsindri",
-      "name": "BIT Sindri, Dhanbad",
-      "url": "https://bitsindri.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "xlri-jamshedpur",
-      "name": "XLRI Jamshedpur",
-      "url": "https://xlri.ac.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "rims-ranchi",
-      "name": "Rajendra Institute of Medical Sciences, Ranchi",
-      "url": "https://rimsranchi.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "baseline_max_errors": 10,
-      "direct_urls": [
-        "https://rimsranchi.ac.in/info-desk-new.php",
-        "https://rimsranchi.ac.in/notifications-order.php",
-        "https://rimsranchi.ac.in/recruitment-in-new.php"
-      ],
-      "keywords": [
-        "notifications",
-        "office order",
-        "recruitment",
-        "phd",
-        "interview",
-        "corrigendum",
-        "अधिसूचना",
-        "नियुक्ति",
-        "साक्षात्कार"
-      ],
-      "discovery_keywords": [
-        "notifications-order",
-        "info-desk-new",
-        "recruitment-in-new",
-        "recruitment",
-        "office-order"
-      ],
-      "use_stealth_on_block": false,
-      "js_wait_after_ms": 4000,
-      "js_wait_for_selector": "a[href$='.pdf'], table tr",
-      "js_selector_timeout_ms": 15000,
-      "js_scroll_bottom": true,
-      "request_timeout_seconds": 60,
-      "max_items_per_site": 80,
-      "verify_ssl": true
-    },
-    {
-      "id": "bau-ranchi",
-      "name": "Birsa Agricultural University, Ranchi",
-      "url": "https://bauranchi.org/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "nusrl-ranchi",
-      "name": "National University of Study & Research in Law, Ranchi",
-      "url": "https://nusrlranchi.ac.in/",
-      "enabled": true,
-      "js_render": "auto",
-      "direct_urls": [
-        "https://nusrlranchi.ac.in/announcements/",
-        "https://nusrlranchi.ac.in/latest-news/",
-        "https://nusrlranchi.ac.in/Tenders/"
-      ],
-      "keywords": [
-        "notice",
-        "notification",
-        "announcement",
-        "admission",
-        "result",
-        "examination",
-        "recruitment",
-        "vacancy",
-        "interview",
-        "tender",
-        "circular",
-        "eligible candidates",
-        "provisional",
-        "ph.d.",
-        "walk-in interview"
-      ],
-      "js_wait_after_ms": 2500
-    },
-    {
-      "id": "arka-jain-university",
-      "name": "Arka Jain University, Jamshedpur",
-      "url": "https://arkajainuniversity.ac.in/",
-      "enabled": true,
-      "js_render": "auto",
-      "js_wait_after_ms": 2500
-    },
-    {
-      "id": "capital-university",
-      "name": "Capital University, Koderma",
-      "url": "https://capitaluniversity.edu.in/",
-      "enabled": true,
-      "js_render": "auto"
-    },
-    {
-      "id": "aisect-university",
-      "name": "AISECT University, Hazaribagh",
-      "url": "https://aisectuniversity.ac.in/",
-      "enabled": true,
-      "js_render": "always",
-      "js_wait_after_ms": 10000,
-      "js_wait_for_selector": "table, .notice, .notice-list, .news, .announcement, .notice-item, .announcement-list, a[href*=\"pdf\"], a[href*=\"notice\"]",
-      "js_scroll_bottom": true,
-      "request_timeout_seconds": 120,
-      "js_selector_timeout_ms": 45000
-    }
-  ]
-}
+name: Jharkhand University Notice Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Har 2 ghante mein run hoga (0 minute par)
+    - cron: '0 */2 * * *'
+
+permissions:
+  contents: write
+
+# Serialize all runs that read/write state.json. Do not cancel a run mid-send.
+concurrency:
+  group: university-notice-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Tesseract OCR (Hindi + English)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+          tesseract --version
+          tesseract --list-langs
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run self-tests
+        run: python monitor.py --test
+
+      - name: Run monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          JS_RENDER_ENABLED: 'true'
+          TESSERACT_ENABLED: 'true'
+          TESSERACT_LANG: 'hin+eng'
+        run: python monitor.py
+
+      # Persist state even when monitoring fails after changing state.json.
+      - name: Commit and push state.json
+        if: always()
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != refs/heads/* ]]; then
+            echo "Refusing to push state from a non-branch ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Stage state.json whether it is tracked or newly created.
+          if [[ ! -f state.json ]]; then
+            echo "ERROR: state.json does not exist; refusing to claim state persistence." >&2
+            exit 1
+          fi
+
+          git add -- state.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update university monitor state [skip ci]'
+          else
+            echo 'state.json has no staged changes.'
+          fi
+
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            echo "State push attempt ${attempt}/5"
+            git fetch origin "$TARGET_BRANCH"
+
+            # Rebase the local state commit (if any) onto the latest branch.
+            if ! git rebase "origin/$TARGET_BRANCH"; then
+              git rebase --abort || true
+              echo "ERROR: Rebase conflict; state was not pushed." >&2
+              exit 1
+            fi
+
+            if git push origin "HEAD:refs/heads/$TARGET_BRANCH"; then
+              pushed=true
+              break
+            fi
+
+            if [[ "$attempt" -lt 5 ]]; then
+              sleep 5
+            fi
+          done
+
+          if [[ "$pushed" != true ]]; then
+            echo 'ERROR: state.json was not persisted to the repository after 5 attempts.' >&2
+            exit 1
+          fi
