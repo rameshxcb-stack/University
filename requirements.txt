@@ -1,28 +1,36 @@
-# HTTP / HTML
+# ═══════════════════════════════════════════════════════════════════
+# Jharkhand University Notice Monitor — Python Dependencies
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── HTTP / HTML ───
 requests>=2.32,<3
 beautifulsoup4>=4.12,<5
 lxml>=5.3,<7
 
-# PDF
+# ─── Scraping Fallback Layers (REQUIRED — code will crash without) ───
+# Layer 1: curl_cffi (browser TLS fingerprint impersonation)
+curl_cffi>=0.7,<1
+# Layer 2: cloudscraper (Cloudflare JS challenge bypass)
+cloudscraper>=1.2.71,<2
+
+# ─── PDF ───
 pdfplumber>=0.11,<1
 PyMuPDF>=1.24,<2
 
-# OCR
+# ─── OCR ───
 rapidocr-onnxruntime>=1.4,<2
 onnxruntime>=1.17
 pytesseract>=0.3.10,<1
 Pillow>=10.0,<12
 
-# PaddleOCR (Devanagari)
-paddlepaddle==2.6.2
-paddleocr==2.7.3
-opencv-python-headless==4.9.0.80
+# ─── Image handling for RapidOCR (headless — no GUI deps on server) ───
+opencv-python-headless>=4.8,<5
 
-# numpy — EXACT pin (Paddle 2.6.2 requires this)
-numpy==1.26.4
+# ─── numpy — required by pdfplumber & rapidocr; avoid numpy 2.x breaks ───
+numpy>=1.24,<2
 
-# Fuzzy
+# ─── Fuzzy string matching ───
 rapidfuzz>=3.9,<4
 
-# JS rendering
+# ─── JS rendering (Layer 3) ───
 playwright>=1.40,<2
