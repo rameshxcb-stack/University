@@ -12,6 +12,8 @@ import re
 import sys
 import time
 import threading
+import socket
+import ssl
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -2589,6 +2591,53 @@ def make_session():
     return session
 
 
+def _site_health_check(session, site, timeout=15):
+    """
+    Pre-scan health check. Returns (state, detail).
+    State: OK | DNS_FAIL | DOWN | TIMEOUT | SSL_ERROR | WAF_BLOCK | HTTP_4XX | HTTP_5XX
+    """
+    base = site["url"]
+    host = urlparse(base).hostname
+    if not host:
+        return "DOWN", f"Invalid URL: {base}"
+
+    # 1) DNS
+    try:
+        socket.getaddrinfo(host, 443)
+    except socket.gaierror as e:
+        return "DNS_FAIL", f"DNS resolution failed for {host}: {e}"
+    except Exception as e:
+        return "DNS_FAIL", f"DNS check error: {type(e).__name__}: {e}"
+
+    # 2) HTTP
+    try:
+        r = session.get(
+            base, timeout=timeout, allow_redirects=True,
+            verify=site.get("verify_ssl", True), stream=True,
+        )
+        status = r.status_code
+        server_hdr = (r.headers.get("Server") or "")[:60]
+        r.close()
+    except requests.exceptions.SSLError as e:
+        return "SSL_ERROR", f"SSL error: {str(e)[:160]}"
+    except requests.exceptions.Timeout:
+        return "TIMEOUT", f"HTTP timeout after {timeout}s"
+    except requests.exceptions.ConnectionError as e:
+        return "DOWN", f"Connection error: {str(e)[:160]}"
+    except Exception as e:
+        return "DOWN", f"{type(e).__name__}: {str(e)[:160]}"
+
+    if status == 403:
+        return "WAF_BLOCK", f"403 Forbidden (firewall/WAF) [server={server_hdr}]"
+    if status == 429:
+        return "WAF_BLOCK", f"429 Too Many Requests (rate limited) [server={server_hdr}]"
+    if 500 <= status < 600:
+        return "HTTP_5XX", f"HTTP {status} server error [server={server_hdr}]"
+    if 400 <= status < 500:
+        return "HTTP_4XX", f"HTTP {status} client error [server={server_hdr}]"
+    return "OK", f"HTTP {status} [server={server_hdr}]"
+
+
 _SITE_VERIFY_SSL_BY_ID = {}
 _SITE_TIMEOUT_BY_ID = {}
 
@@ -2740,12 +2789,30 @@ def site_state(state, site_id):
 
 def mark_site_success(state, site_id, count):
     s = site_state(state, site_id)
-    s["consecutive_failures"] = 0; s["last_success"] = utc_now(); s["last_error"] = None; s["last_error_at"] = None; s["last_item_count"] = count
+    s["consecutive_failures"] = 0
+    s["last_success"] = utc_now()
+    s["last_error"] = None
+    s["last_error_at"] = None
+    s["last_item_count"] = count
+    s.pop("quarantined_until", None)
+    s.pop("quarantine_reason", None)
 
 
 def mark_site_failure(state, site_id, error):
     s = site_state(state, site_id)
-    s["consecutive_failures"] += 1; s["total_failures"] += 1; s["last_error"] = clean_text(error, 500); s["last_error_at"] = utc_now()
+    s["consecutive_failures"] += 1
+    s["total_failures"] += 1
+    s["last_error"] = clean_text(error, 500)
+    s["last_error_at"] = utc_now()
+    # Circuit breaker: 30 consecutive failures -> 24h quarantine
+    if s["consecutive_failures"] >= 30:
+        s["quarantined_until"] = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        s["quarantine_reason"] = clean_text(error, 200)
+        print(
+            f"[CIRCUIT-BREAKER] site_id={site_id} quarantined 24h "
+            f"(consecutive_failures={s['consecutive_failures']})",
+            file=sys.stderr,
+        )
 
 
 def _check_and_send_site_alerts(state, cfg, token, chat_id, threshold=3, cooldown_hours=6):
@@ -3395,6 +3462,35 @@ def discover_site(session, site, scan):
     timeout = int(site.get("request_timeout_seconds", scan["request_timeout_seconds"]))
     effective_scan = dict(scan)
     effective_scan["request_timeout_seconds"] = timeout
+
+    # IIS-friendly headers for RIMS (and any site that opts in).
+    if site.get("id") == "rims-ranchi":
+        session.headers.update({
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "Accept-Encoding": "gzip, deflate, br",
+        })
+
+    # Pre-scan health check.
+    health_state, health_detail = _site_health_check(
+        session, site, timeout=max(8, min(15, timeout))
+    )
+    if health_state != "OK":
+        print(
+            f"[SITE-DOWN] name={site['name']} site_id={site['id']} "
+            f"state={health_state} detail={_safe_error_detail(health_detail, 200)}",
+            file=sys.stderr,
+        )
+        return site["id"], [], [f"{health_state}: {health_detail}"], False
+
+    print(
+        f"[SITE-HEALTH] site_id={site['id']} state=OK detail={health_detail}",
+        file=sys.stderr,
+    )
+
     max_pages = scan["max_discovery_pages_per_site"]
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
     max_pagination_per_archive = scan.get("max_pagination_per_archive", 3)
@@ -4615,9 +4711,26 @@ def refresh_stats(state):
     state["stats"]["sent"] = counts["sent"]
 
 
+_RIMS_NOTICE_PATHS = (
+    "/class_file/pdf/",
+    "/odwbrms/",
+    "/public/storage/cms/notice/",
+    "/storage/notice",
+    "/writereaddata/",
+    "/uploadfile/",
+)
+
+
+def _is_rims_notice_pdf(url):
+    u = str(url or "").lower()
+    return "rimsranchi.ac.in" in u and any(p in u for p in _RIMS_NOTICE_PATHS)
+
+
 def _is_non_notice_pdf(record):
     url_lower = (record.get("url") or "").lower()
     if not (url_lower.endswith(".pdf") or ".pdf" in url_lower): return False
+    if _is_rims_notice_pdf(url_lower):
+        return False
     combined = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
     return not any(kw in combined for kw in _NOTICE_KEYWORDS)
 
@@ -4656,8 +4769,9 @@ def _should_fetch_pdf(record):
     if url_lower.endswith(".pdf") or ".pdf" in url_lower:
         title_lower = " ".join((record.get("explicit_title") or "", record.get("title") or "")).lower()
         if not any(kw in title_lower for kw in _NOTICE_KEYWORDS):
-            print(f"[SKIP-PDF] Non-notice PDF (faculty/other): {title_lower[:60]}", file=sys.stderr)
-            return False
+            if not _is_rims_notice_pdf(url_lower):
+                print(f"[SKIP-PDF] Non-notice PDF (faculty/other): {title_lower[:60]}", file=sys.stderr)
+                return False
     block_patterns = ("/past-notices", "/past_notices", "/whats-new", "/whats_new", "/notice_category", "/notice-category", "/document-category", "/document_category", "/archive", "/search", "/contact-us", "/contact_us", "/contactus", "/about-district", "/about_district", "/photo-gallery", "/photo_gallery", "/video-gallery", "/video_gallery", "/anti-ragging", "/grievance", "/rti")
     if any(pat in url_lower for pat in block_patterns): return False
     if any(hint in url_lower for hint in ("/downloadfile", "/download_file", "/downloadpdf", "/download_pdf", "/getfile", "/showfile", "/viewfile", "/filedownload", "/writereaddata/", "/uploadfile/", "/storage/notices/", "/storage/notice/", "/documents/notice", "/notice-documents/")): return True
@@ -5112,9 +5226,27 @@ def main():
     partial_errors_this_run = 0
     results = {}
 
-    workers = min(scan["max_workers"], len(cfg["websites"]))
+    sites_to_scan = []
+    for site in cfg["websites"]:
+        ss = site_state(state, site["id"])
+        q_until = _parse_utc_timestamp(ss.get("quarantined_until"))
+        if q_until and q_until > datetime.now(timezone.utc):
+            print(
+                f"[QUARANTINE] skip {site['name']} until {q_until.isoformat()} "
+                f"reason={ss.get('quarantine_reason', 'N/A')}",
+                file=sys.stderr,
+            )
+            results[site["id"]] = {
+                "candidates": [],
+                "errors": [f"quarantined: {ss.get('quarantine_reason', '')}"],
+                "success": False,
+            }
+            continue
+        sites_to_scan.append(site)
+
+    workers = min(scan["max_workers"], max(1, len(sites_to_scan)))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {executor.submit(scan_site, site, scan): site for site in cfg["websites"]}
+        futures = {executor.submit(scan_site, site, scan): site for site in sites_to_scan}
         for future in as_completed(futures):
             site = futures[future]
             try:
@@ -5328,13 +5460,39 @@ def main():
     # Attachment-first scheduling prevents HTML-only candidates with high title
     # scores from consuming the run budget before their PDF/image notices.
     # HTML pages are still scanned normally to discover links and metadata.
-    pending.sort(
+    # Rescue never-attempted PDF/image items so they cannot starve.
+    _now = datetime.now(timezone.utc)
+    _starved = []
+    for iid, record in pending:
+        if int(record.get("attempts", 0)) != 0:
+            continue
+        if _attachment_priority(record) == 0:  # HTML-only; not an attachment
+            continue
+        fs = _parse_utc_timestamp(record.get("first_seen"))
+        if fs and (_now - fs).days >= 2:
+            _starved.append((iid, record))
+
+    # Oldest starved attachment first.
+    _starved.sort(key=lambda pair: pair[1].get("first_seen", ""))
+    _starved_reserved = _starved[:5]
+    _starved_ids = {iid for iid, _ in _starved_reserved}
+
+    _rest = [(iid, r) for iid, r in pending if iid not in _starved_ids]
+    _rest.sort(
         key=lambda pair: (
             _attachment_priority(pair[1]),
             pending_priority(pair[1], scan["keywords"]),
         ),
         reverse=True,
     )
+
+    if _starved_reserved:
+        print(
+            f"[STARVATION-RESCUE] reserved={len(_starved_reserved)} slot(s) for never-attempted PDF/image items",
+            file=sys.stderr,
+        )
+
+    pending = _starved_reserved + _rest
     _priority_counts = {"pdf": 0, "image": 0, "html_only": 0}
     for _iid, _record in pending:
         _p = _attachment_priority(_record)
