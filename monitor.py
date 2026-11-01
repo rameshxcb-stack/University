@@ -24,6 +24,14 @@ from urllib.robotparser import RobotFileParser
 
 import pdfplumber
 import requests
+try:
+    import curl_cffi.requests as curl_requests
+except ImportError:
+    curl_requests = None
+try:
+    import cloudscraper
+except ImportError:
+    cloudscraper = None
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from rapidfuzz.distance import Levenshtein
@@ -1655,16 +1663,54 @@ def _schedule_telegram_retry(record, now=None):
 
 
 MEANINGFUL_FIELDS = {
-    "admission_last_date": [r"(?:last date|last date to apply|apply(?:ing)? till|closing date|admission last date|अंतिम तिथि|आवेदन की अंतिम तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "exam_date": [r"(?:exam(?:ination)? date|परीक्षा तिथि|परीक्षा दिनांक)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "result_date": [r"(?:result date|परिणाम तिथि|रिजल्ट जारी)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "revaluation_last_date": [r"(?:revaluation last date|revaluation deadline|पुनर्मूल्यांकन अंतिम तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "fee_last_date": [r"(?:fee submission last date|last date to pay fee|शुल्क जमा अंतिम तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "vacancy_count": [r"(?:total vacancies?|no\. of vacancies?|vacancies|पदों की संख्या|कुल पद|रिक्त पद)\s*[:：-]?\s*([\d,]+)"],
-    "admit_card_date": [r"(?:admit card download|admit card available|प्रवेश पत्र डाउनलोड)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "counselling_date": [r"(?:counselling date|काउंसलिंग तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
-    "age_limit": [r"(?:age limit|आयु सीमा)\s*[:：-]?\s*([^\n,;]{1,70})"],
-    "eligibility": [r"(?:eligibility|educational qualification|योग्यता|शैक्षणिक योग्यता)\s*[:：-]?\s*([^\n;]{1,120})"],
+    # ─── ADMISSION ───
+    "apply_start_date": [r"(?:apply\s*(?:start|begin|open(?:ing)?|from)|application\s*(?:start|begin|open(?:ing)?)|registration\s*(?:start|begin)|आवेदन\s*(?:प्रारंभ|शुरू|आरंभ|प्रारम्भ)|पंजीकरण\s*(?:प्रारंभ|शुरू))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "last_date": [r"(?:last\s*date|closing\s*date|apply\s*(?:by|till|before)|deadline|due\s*date|अंतिम\s*तिथि|आख़िरी\s*तारीख़|अंतिम\s*तारीख)\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "admission_last_date": [r"(?:admission\s*(?:last\s*date|closing\s*date)|प्रवेश\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "counselling_date": [r"(?:counsell?ing\s*(?:date|schedule|round)|काउंसलिंग\s*(?:तिथि|दिनांक|कार्यक्रम))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── RESULT ───
+    "result_date": [r"(?:result\s*(?:date|declared|published)|परिणाम\s*(?:तिथि|घोषित|जारी)|रिजल्ट\s*(?:जारी|घोषित))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "next_stage_date": [r"(?:next\s*stage\s*date|अगले\s*चरण\s*की\s*तिथि)\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "rechecking_last_date": [r"(?:re-?check(?:ing)?\s*(?:last\s*date|deadline)|रीचेकिंग\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── ADMIT CARD ───
+    "download_start_date": [r"(?:download\s*(?:start|begin|from)|डाउनलोड\s*(?:प्रारंभ|शुरू))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "download_last_date": [r"(?:download\s*(?:last\s*date|deadline|till|upto|up\s*to)|डाउनलोड\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "admit_card_date": [r"(?:admit\s*card\s*(?:date|download|available)|प्रवेश\s*पत्र\s*(?:तिथि|डाउनलोड|उपलब्ध))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "exam_date": [r"(?:exam(?:ination)?\s*date|परीक्षा\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "exam_time": [r"(?:exam(?:ination)?\s*time|परीक्षा\s*(?:समय|टाइम))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "reporting_time": [r"(?:reporting\s*time|रिपोर्टिंग\s*(?:समय|टाइम))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── ANSWER KEY ───
+    "objection_start_date": [r"(?:objection\s*(?:start|begin|from|window\s*open)|आपत्ति\s*(?:प्रारंभ|शुरू))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "objection_last_date": [r"(?:objection\s*(?:last\s*date|deadline|closing)|आपत्ति\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── EXAM SCHEDULE / TIMETABLE ───
+    "exam_start_date": [r"(?:exam(?:ination)?\s*(?:start|begin|commence)|परीक्षा\s*(?:प्रारंभ|शुरू|आरंभ))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "exam_end_date": [r"(?:exam(?:ination)?\s*(?:end|conclude|finish)|परीक्षा\s*(?:समाप्त|ख़त्म|अंत))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "practical_dates": [r"(?:practical\s*(?:exam|date|schedule)|प्रायोगिक\s*(?:परीक्षा|तिथि))\s*[:：-]?\s*([^\n,;]{1,80})"],
+    "viva_dates": [r"(?:viva\s*(?:voce|date|schedule)|वाइवा\s*(?:तिथि|कार्यक्रम))\s*[:：-]?\s*([^\n,;]{1,80})"],
+    # ─── REVALUATION ───
+    "revaluation_start_date": [r"(?:revaluation\s*(?:start|begin|from)|पुनर्मूल्यांकन\s*(?:प्रारंभ|शुरू))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "revaluation_last_date": [r"(?:revaluation\s*(?:last\s*date|deadline|closing)|पुनर्मूल्यांकन\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── FEE ───
+    "fee_last_date": [r"(?:fee\s*(?:submission|payment)?\s*(?:last\s*date|deadline)|last\s*date\s*(?:to|for)\s*pay(?:ment)?|शुल्क\s*(?:जमा|भुगतान)\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|तारीख़))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── ACADEMIC CALENDAR ───
+    "event_date": [r"(?:event\s*(?:date|on)|कार्यक्रम\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "effective_from": [r"(?:effective\s*from|with\s*effect\s*from|प्रभावी\s*(?:तिथि|से))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "effective_date": [r"(?:effective\s*date|प्रभावी\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── PLACEMENT ───
+    "drive_date": [r"(?:drive\s*(?:date|on)|placement\s*drive|प्लेसमेंट\s*ड्राइव|ड्राइव\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── TENDER ───
+    "tender_issue_date": [r"(?:tender\s*(?:issue|issued|publish(?:ed)?|publication)\s*date|निविदा\s*(?:जारी|प्रकाशन)\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "tender_submission_last_date": [r"(?:(?:tender|bid)\s*submission\s*(?:last|closing|due)\s*date|last\s*date\s*(?:of|for)\s*(?:tender|bid)\s*submission|bid\s*(?:submission|submit)\s*(?:last|closing|due)|निविदा\s*जमा\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "tender_opening_date": [r"(?:(?:tender|bid)\s*opening\s*date|date\s*of\s*(?:tender|bid)\s*opening|निविदा\s*खोलने\s*(?:की\s*)?(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "submission_last_date": [r"(?:(?:document|application)\s*submission\s*(?:last|closing)\s*date|जमा\s*(?:अंतिम|आख़िरी)\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "opening_date": [r"(?:opening\s*date|खोलने\s*की\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    # ─── VACANCY / RECRUITMENT ───
+    "interview_date": [r"(?:interview\s*(?:date|on|schedule)|साक्षात्कार\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "vacancy_count": [r"(?:total\s*vacanc(?:y|ies)|no\.\s*of\s*vacanc(?:y|ies)|vacancies|पदों\s*की\s*संख्या|कुल\s*पद|रिक्त\s*पद)\s*[:：-]?\s*([\d,]+)"],
+    # ─── GENERAL ───
+    "issue_date": [r"(?:issue\s*date|issued\s*on|publish(?:ed)?\s*(?:on|date)|publication\s*date|notice\s*date|जारी\s*(?:तिथि|दिनांक)|प्रकाशन\s*(?:तिथि|दिनांक))\s*[:：-]?\s*([^\n,;]{1,50})"],
+    "age_limit": [r"(?:age\s*limit|आयु\s*सीमा)\s*[:：-]?\s*([^\n,;]{1,70})"],
+    "eligibility": [r"(?:eligibility|educational\s*qualification|योग्यता|शैक्षणिक\s*योग्यता)\s*[:：-]?\s*([^\n;]{1,120})"],
 }
 
 
@@ -2226,6 +2272,34 @@ def _extract_document_dates(text):
     return sorted(set(_extract_full_dates(opening)))
 
 
+_YEAR_ONLY_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+
+def _is_expired_by_date_or_year(text, now=None, grace_days=0):
+    """Exact full-date FIRST. Year-only fallback ONLY when no full date exists.
+    Returns (expired: bool, kind: 'exact'|'year'|'none', evidence)."""
+    now = now or datetime.now(timezone.utc)
+    cutoff_date = (now - timedelta(days=grace_days)).date()
+    raw = str(text or "").translate(_DEVA_DIGIT_TRANS)
+    lines = [ln for ln in raw.splitlines() if ln.strip() and not _DATE_NOISE_LINE.search(ln)]
+    source = "\n".join(lines)
+
+    exact_dates = _extract_document_dates(source)
+    if exact_dates:
+        newest = max(exact_dates)
+        return (newest.date() < cutoff_date, "exact", newest.date().isoformat())
+
+    years = [int(y) for y in _YEAR_ONLY_RE.findall(source)]
+    if years:
+        newest_year = max(years)
+        try:
+            latest_possible = datetime(newest_year, 12, 31, tzinfo=timezone.utc)
+        except ValueError:
+            return (False, "none", None)
+        return (latest_possible.date() < cutoff_date, "year", newest_year)
+
+    return (False, "none", None)
+
 def _has_current_actionable_reference(text, now=None):
     """True only for a current/future year tied to an actionable notice topic.
 
@@ -2315,20 +2389,23 @@ def _is_stale_notice(title, context, url, upload_date=None, pdf_text=None, stric
         revision_signal = bool(re.search(
             r"corrigendum|revised|revision|amended|amendment|addendum|extension|extended|"
             r"date extended|last date|शुद्धिपत्र|संशोधित|संशोधन|तिथि बढ़ाई|अवधि बढ़ाई",
-            f"{normalized_title}\\n{session_source}", re.I
+            f"{normalized_title}\n{session_source}", re.I
         ))
-        current_year = now.year
-        revision_has_current_year = bool(re.search(
-            rf"(?<!\\d){current_year}(?!\\d)",
-            f"{normalized_title}\\n{session_source}"
-        ))
+        # Revision bypass MUST be backed by an EXACT full date (year alone is NOT enough)
+        revision_exact_dates = _extract_document_dates(f"{normalized_title}\n{session_source}")
+        revision_has_current_exact = bool(
+            revision_signal and revision_exact_dates
+            and any(d.date() >= cutoff.date() for d in revision_exact_dates)
+        )
 
-        # A current/future actionable event or a specifically identified
-        # current-year revision is retained for classification, not auto-sent.
         if newest_pdf_date and newest_pdf_date < cutoff and (
-            actionable_future or (revision_signal and revision_has_current_year)
+            actionable_future or revision_has_current_exact
         ):
-            reason = "current/future actionable reference" if actionable_future else "current-year revision signal"
+            reason = (
+                "current/future actionable reference"
+                if actionable_future
+                else "exact revision date confirms current"
+            )
             print(f"[DATE-REVIEW] Old issue date plus {reason}; retain for content verification", file=sys.stderr)
             return False
 
@@ -3474,22 +3551,8 @@ def discover_site(session, site, scan):
             "Accept-Encoding": "gzip, deflate, br",
         })
 
-    # Pre-scan health check.
-    health_state, health_detail = _site_health_check(
-        session, site, timeout=max(8, min(15, timeout))
-    )
-    if health_state != "OK":
-        print(
-            f"[SITE-DOWN] name={site['name']} site_id={site['id']} "
-            f"state={health_state} detail={_safe_error_detail(health_detail, 200)}",
-            file=sys.stderr,
-        )
-        return site["id"], [], [f"{health_state}: {health_detail}"], False
-
-    print(
-        f"[SITE-HEALTH] site_id={site['id']} state=OK detail={health_detail}",
-        file=sys.stderr,
-    )
+    # Health pre-check is intentionally skipped: each page is tried through
+    # the configured fallback layers below. Failures are still recorded per page.
 
     max_pages = scan["max_discovery_pages_per_site"]
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
@@ -3554,62 +3617,170 @@ def discover_site(session, site, scan):
 
             response = None
             response_text = None
+            response_content = b""
             rendered_from_waf = False
             final_url = page
             content_type = ""
-            try:
-                response = session.get(page, timeout=timeout, allow_redirects=True, verify=verify_ssl)
-                final_url = canonical_url(response.url)
-                content_type = response.headers.get("content-type", "").lower()
-                if site.get("id") == "rims-ranchi":
-                    print(f"[RIMS-STATUS] url={page[:120]} http={response.status_code} ct={(content_type or '')[:40]} bytes={len(response.content)}", file=sys.stderr)
-            except requests.RequestException as request_exc:
-                can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
-                if can_browser_retry:
-                    print(f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
+            scan_layer_used = None
+
+            # ═══════════════════════════════════════════════════════════════
+            # 5-LAYER ADVANCED FALLBACK SYSTEM
+            # L1 curl_cffi -> L2 cloudscraper -> L3 Playwright -> L4 Worker -> L5 ScrapingAnt
+            # ═══════════════════════════════════════════════════════════════
+
+            # LAYER 1: curl_cffi (browser TLS fingerprint impersonation)
+            if curl_requests is not None:
+                try:
+                    r_cffi = curl_requests.get(
+                        page, impersonate="chrome110", timeout=min(20, timeout),
+                        verify=verify_ssl, allow_redirects=True
+                    )
+                    if r_cffi.status_code == 200 and r_cffi.content:
+                        response_text = r_cffi.text
+                        response_content = r_cffi.content
+                        final_url = str(r_cffi.url)
+                        content_type = (r_cffi.headers.get("content-type") or "").lower()
+                        scan_layer_used = "L1-curl_cffi"
+                        print(f"[SCAN-L1] OK: {page[:70]}", file=sys.stderr)
+                    else:
+                        print(f"[SCAN-L1-FAIL] HTTP {r_cffi.status_code}: {page[:70]}", file=sys.stderr)
+                except Exception as e:
+                    print(f"[SCAN-L1-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
+
+            # LAYER 2: cloudscraper
+            if not response_text and cloudscraper is not None:
+                try:
+                    scraper = cloudscraper.create_scraper(
+                        browser={"browser": "chrome", "platform": "windows", "mobile": False},
+                        delay=2
+                    )
+                    r_cs = scraper.get(
+                        page, timeout=min(25, timeout), verify=verify_ssl,
+                        allow_redirects=True
+                    )
+                    if r_cs.status_code == 200 and r_cs.content:
+                        response_text = r_cs.text
+                        response_content = r_cs.content
+                        final_url = str(r_cs.url)
+                        content_type = (r_cs.headers.get("content-type") or "").lower()
+                        scan_layer_used = "L2-cloudscraper"
+                        print(f"[SCAN-L2] OK: {page[:70]}", file=sys.stderr)
+                    else:
+                        print(f"[SCAN-L2-FAIL] HTTP {r_cs.status_code}: {page[:70]}", file=sys.stderr)
+                except Exception as e:
+                    print(f"[SCAN-L2-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
+
+            # LAYER 3: Stealth Playwright (JS rendering / WAF retry)
+            if (
+                not response_text and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE
+                and js_render_count < JS_MAX_RENDER_PER_SITE
+                and site.get("js_render", "auto") != "never"
+            ):
+                try:
+                    rendered_html, rendered_url, js_method = _render_with_playwright(
+                        page, timeout_ms=timeout * 1000,
+                        wait_for_selector=site.get("js_wait_for_selector"),
+                        wait_after_ms=site.get("js_wait_after_ms"),
+                        scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
+                        selector_timeout_ms=site.get("js_selector_timeout_ms"),
+                        ignore_https_errors=not site.get("verify_ssl", True),
+                        use_stealth=True, proxy=None
+                    )
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
+                        response_content = rendered_html.encode("utf-8", errors="ignore")
                         final_url = _canonical_spa_url(rendered_url or page)
                         content_type = "text/html"
                         rendered_from_waf = True
-                        print(f"[NETWORK-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)", file=sys.stderr)
-                    else: print(f"[NETWORK-RETRY-FAIL] {page[:80]}: {type(request_exc).__name__}; {js_method}", file=sys.stderr)
-                if response_text is None: raise request_exc
+                        scan_layer_used = "L3-Playwright"
+                        print(f"[SCAN-L3] OK: {page[:70]} ({js_method})", file=sys.stderr)
+                    else:
+                        print(f"[SCAN-L3-FAIL] Empty render: {page[:70]} ({js_method})", file=sys.stderr)
+                except Exception as e:
+                    print(f"[SCAN-L3-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
 
-            if response is not None and response.status_code in (403, 503):
-                if JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE:
-                    print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
-                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
-                    js_render_count += 1
-                    if rendered_html:
-                        response_text = rendered_html
-                        final_url = _canonical_spa_url(rendered_url)
-                        content_type = "text/html"
-                        rendered_from_waf = True
-                        print(f"[WAF-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)", file=sys.stderr)
-                    else: print(f"[WAF-RETRY-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
-                if response_text is None: raise RuntimeError(f"HTTP {response.status_code}; Playwright fallback unavailable or failed")
-            elif response is not None and response.status_code >= 400: raise RuntimeError(f"HTTP {response.status_code}")
+            # LAYER 4: Cloudflare Worker (optional; configure CF_WORKER_URL secret)
+            if not response_text:
+                cf_worker_url = os.getenv("CF_WORKER_URL", "").strip()
+                if cf_worker_url:
+                    try:
+                        proxy_url = cf_worker_url + ("&" if "?" in cf_worker_url else "?") + urlencode({"url": page})
+                        r_cf = requests.get(proxy_url, timeout=min(40, max(10, timeout)))
+                        if r_cf.status_code == 200 and r_cf.content:
+                            response_text = r_cf.text
+                            response_content = r_cf.content
+                            final_url = page
+                            content_type = (r_cf.headers.get("content-type") or "text/html").lower()
+                            scan_layer_used = "L4-Cloudflare-Worker"
+                            print(f"[SCAN-L4] OK via Cloudflare Worker: {page[:70]}", file=sys.stderr)
+                        else:
+                            print(f"[SCAN-L4-FAIL] HTTP {r_cf.status_code}: {page[:70]}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[SCAN-L4-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
 
-            if response is not None and not rendered_from_waf and content_type:
+            # LAYER 5: ScrapingAnt (optional; configure SCRAPINGANT_API_KEY secret)
+            if not response_text:
+                sa_api_key = os.getenv("SCRAPINGANT_API_KEY", "").strip()
+                if sa_api_key:
+                    try:
+                        print(f"[SCAN-L5] Trying ScrapingAnt: {page[:60]}", file=sys.stderr)
+                        sa_url = "https://api.scrapingant.com/v2/general?" + urlencode({
+                            "url": page,
+                            "x-api-key": sa_api_key,
+                        })
+                        r_sa = requests.get(sa_url, timeout=min(60, max(15, timeout)))
+                        if r_sa.status_code == 200 and r_sa.content:
+                            response_text = r_sa.text
+                            response_content = r_sa.content
+                            final_url = page
+                            content_type = (r_sa.headers.get("content-type") or "text/html").lower()
+                            scan_layer_used = "L5-ScrapingAnt"
+                            print(f"[SCAN-L5] OK via ScrapingAnt: {page[:70]}", file=sys.stderr)
+                        else:
+                            print(f"[SCAN-L5-FAIL] HTTP {r_sa.status_code}: {page[:70]}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[SCAN-L5-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
+
+            if not response_text:
+                raise RuntimeError(f"All configured scanning layers failed for {page}")
+
+            print(
+                f"[SCAN-DONE] site_id={site.get('id', 'unknown')} layer={scan_layer_used} "
+                f"bytes={len(response_content)} content_type={content_type[:50]!r}",
+                file=sys.stderr
+            )
+
+            # CRITICAL: Direct PDF / Office document detection before HTML parsing.
+            if content_type:
                 ct_lower = content_type.lower()
-                is_pdf_resp = _looks_like_pdf_response(response.content, ct_lower, final_url)
-                is_office_doc = ("application/vnd.openxmlformats" in ct_lower or "application/msword" in ct_lower or "application/vnd.ms-excel" in ct_lower or "application/vnd.ms-powerpoint" in ct_lower)
+                is_pdf_resp = _looks_like_pdf_response(response_content, ct_lower, final_url)
+                is_office_doc = (
+                    "application/vnd.openxmlformats" in ct_lower
+                    or "application/msword" in ct_lower
+                    or "application/vnd.ms-excel" in ct_lower
+                    or "application/vnd.ms-powerpoint" in ct_lower
+                )
                 if is_pdf_resp:
                     filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
-                    candidates[final_url] = {"url": final_url, "title": clean_text(filename, 300), "context": "Direct PDF notice", "source_page": page, "is_pdf": True, "score": 3, "upload_date": None}
+                    candidates[final_url] = {
+                        "url": final_url, "title": clean_text(filename, 300),
+                        "context": "Direct PDF notice", "source_page": page,
+                        "is_pdf": True, "score": 3, "upload_date": None
+                    }
                     successful_pages += 1
                     continue
                 if is_office_doc:
                     filename = final_url.rsplit("/", 1)[-1] or "Document Notice"
-                    print(f"[DOC-NOTICE] Office document detected: {filename[:80]}", file=sys.stderr)
-                    candidates[final_url] = {"url": final_url, "title": clean_text(filename, 300), "context": "Direct document notice", "source_page": page, "is_pdf": True, "score": 3, "upload_date": None}
+                    candidates[final_url] = {
+                        "url": final_url, "title": clean_text(filename, 300),
+                        "context": "Direct document notice", "source_page": page,
+                        "is_pdf": True, "score": 3, "upload_date": None
+                    }
                     successful_pages += 1
                     continue
                 if "html" not in ct_lower and "xhtml" not in ct_lower:
-                    print(f"[SKIP] Non-HTML, non-document content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
+                    print(f"[SKIP] Non-HTML content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
                     continue
 
             js_mode = site.get("js_render", "auto")
@@ -3625,7 +3796,7 @@ def discover_site(session, site, scan):
                     final_url = _canonical_spa_url(rendered_url)
                     print(f"[JS-OK] {page[:80]} -> {len(rendered_html)} chars ({js_method})", file=sys.stderr)
                 else:
-                    response_text = response.text
+                    response_text = response.text if response is not None else (response_text or "")
                     print(f"[JS-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
             elif response_text is None: response_text = response.text if response is not None else ""
 
@@ -4042,7 +4213,7 @@ def _build_prompt(prompt_items):
         '"event_type":null,"event_date":null,"event_description":null,"calendar_link":null,"syllabus_link":null,"effective_from":null,'
         '"scheme_name":null,"scholarship_amount":null,"applicable_category":null,"income_limit":null,"apply_mode":null,"portal_name":null,'
         '"company_name":null,"job_role":null,"package":null,"location":null,"drive_date":null,'
-        '"tender_no":null,"tender_type":null,"work_description":null,"estimated_cost":null,"emd_amount":null,"tender_fee":null,'
+        '"tender_no":null,"tender_type":null,"tender_issue_date":null,"work_description":null,"estimated_cost":null,"emd_amount":null,"tender_fee":null,'
         '"submission_last_date":null,"opening_date":null,"tender_document_link":null,"eligibility_criteria":null,'
         '"post_name":null,"total_posts":null,"post_details":[],"qualification":null,"age_limit":null,"pay_scale":null,"advertisement_no":null,'
         '"selection_process":null,"experience_required":null,"posting_location":null,"interview_date":null,"venue":null,'
@@ -4132,6 +4303,7 @@ def _parse_gemini_response(text, item_count):
             "apply_mode": _str(row, "apply_mode", 100), "portal_name": _str(row, "portal_name", 150), "company_name": _str(row, "company_name", 200),
             "job_role": _str(row, "job_role", 200), "package": _str(row, "package", 100), "location": _str(row, "location", 200),
             "drive_date": _str(row, "drive_date", 80), "tender_no": _str(row, "tender_no", 100), "tender_type": _str(row, "tender_type", 100),
+            "tender_issue_date": _str(row, "tender_issue_date", 80),
             "work_description": _str(row, "work_description", 300), "estimated_cost": _str(row, "estimated_cost", 100), "emd_amount": _str(row, "emd_amount", 100),
             "tender_fee": _str(row, "tender_fee", 100), "submission_last_date": _str(row, "submission_last_date", 80), "opening_date": _str(row, "opening_date", 80),
             "tender_document_link": _str(row, "tender_document_link", 500), "eligibility_criteria": _str(row, "eligibility_criteria", 300), "post_name": _str(row, "post_name", 200),
@@ -4375,9 +4547,15 @@ def _is_devanagari(s):
 
 _LABELS_HI = {
     "reference_number": "संदर्भ संख्या", "issuing_authority": "जारीकर्ता प्राधिकरण", "issuing_date": "जारी तारीख़", "contact_person": "संपर्क व्यक्ति", "contact_number": "संपर्क नंबर", "email": "ईमेल", "helpline_number": "हेल्पलाइन नंबर", "official_address": "कार्यालय पता", "important_instructions": "ज़रूरी निर्देश", "course_name": "कोर्स", "course_level": "कोर्स स्तर", "session": "सत्र", "admission_mode": "प्रवेश मोड", "entrance_exam_name": "प्रवेश परीक्षा", "eligibility": "योग्यता", "eligibility_marks": "योग्यता मार्क्स", "age_criteria": "उम्र मानदंड", "application_fee": "आवेदन शुल्क", "fee_structure": "शुल्क संरचना", "total_seats": "कुल सीटें", "reservation_details": "आरक्षण विवरण", "apply_start_date": "आवेदन शुरू", "last_date": "अंतिम तिथि", "counselling_date": "काउंसलिंग तिथि", "apply_link": "ऑनलाइन आवेदन", "prospectus_link": "प्रॉस्पेक्टस", "documents_required": "आवश्यक दस्तावेज़", "hostel_available": "हॉस्टल उपलब्ध", "result_for": "परिणाम किसका", "exam_name": "परीक्षा", "semester": "सेमेस्टर", "result_date": "परिणाम तिथि", "result_link": "परिणाम देखें", "result_type": "परिणाम प्रकार", "merit_list_link": "मेरिट लिस्ट", "cutoff_marks": "कटऑफ़ मार्क्स", "total_selected": "कुल चयनित", "next_stage": "अगला चरण", "next_stage_date": "अगले चरण की तिथि", "rechecking_last_date": "रीचेकिंग अंतिम तिथि", "rechecking_link": "रीचेकिंग लिंक", "rechecking_fee": "रीचेकिंग शुल्क", "exam_date": "परीक्षा तिथि", "exam_time": "परीक्षा समय", "exam_duration": "परीक्षा अवधि", "exam_center": "परीक्षा केंद्र", "reporting_time": "रिपोर्टिंग समय", "download_start_date": "डाउनलोड शुरू", "download_last_date": "डाउनलोड अंतिम", "admit_card_link": "एडमिट कार्ड डाउनलोड", "instructions": "निर्देश", "total_questions": "कुल प्रश्न", "answer_key_link": "उत्तर कुंजी देखें", "objection_start_date": "आपत्ति शुरू", "objection_last_date": "आपत्ति अंतिम", "objection_fee": "आपत्ति शुल्क", "per_question_fee": "प्रति प्रश्न शुल्क", "objection_mode": "आपत्ति मोड", "objection_address": "आपत्ति पता", "payment_mode": "भुगतान मोड", "exam_start_date": "परीक्षा शुरू", "exam_end_date": "परीक्षा समाप्त", "timetable_link": "टाइम टेबल देखें", "subject_list": "विषय सूची", "paper_code": "पेपर कोड", "practical_dates": "प्रैक्टिकल तिथियाँ", "viva_dates": "वाइवा तिथियाँ", "revaluation_start_date": "पुनर्मूल्यांकन शुरू", "revaluation_last_date": "पुनर्मूल्यांकन अंतिम", "revaluation_fee": "पुनर्मूल्यांकन शुल्क", "revaluation_mode": "पुनर्मूल्यांकन मोड", "certificate_type": "प्रमाण पत्र प्रकार", "processing_time": "प्रोसेसिंग समय", "fee_type": "शुल्क प्रकार", "amount": "राशि", "late_fee": "विलंब शुल्क", "payment_link": "भुगतान लिंक", "event_type": "कार्यक्रम प्रकार", "event_date": "कार्यक्रम तिथि", "event_description": "विवरण", "calendar_link": "कैलेंडर देखें", "syllabus_link": "पाठ्यक्रम देखें", "effective_from": "प्रभावी तिथि से", "scheme_name": "योजना", "scholarship_amount": "छात्रवृत्ति राशि", "applicable_category": "किस श्रेणी के लिए", "income_limit": "आय सीमा", "apply_mode": "आवेदन मोड", "portal_name": "पोर्टल", "company_name": "कंपनी", "job_role": "जॉब रोल", "package": "पैकेज", "location": "स्थान", "drive_date": "ड्राइव तिथि", "tender_no": "निविदा संख्या", "tender_type": "निविदा प्रकार", "work_description": "कार्य विवरण", "estimated_cost": "अनुमानित लागत", "emd_amount": "EMD राशि", "tender_fee": "निविदा शुल्क", "submission_last_date": "जमा अंतिम तिथि", "opening_date": "खोलने की तिथि", "tender_document_link": "निविदा दस्तावेज़", "eligibility_criteria": "पात्रता मानदंड", "post_name": "पद का नाम", "total_posts": "कुल पद", "post_breakdown": "पद विवरण", "qualification": "योग्यता", "age_limit": "उम्र सीमा", "pay_scale": "वेतन", "advertisement_no": "विज्ञापन संख्या", "selection_process": "चयन प्रक्रिया", "experience_required": "अनुभव आवश्यक", "posting_location": "पोस्टिंग स्थान", "interview_date": "इंटरव्यू तिथि", "venue": "स्थान", "subject": "विषय", "notice_type": "सूचना प्रकार", "applicable_to": "किस पर लागू", "action_required": "क्या करना है", "action_deadline": "अंतिम तिथि", "effective_date": "प्रभावी तिथि", "supersedes": "किसे रद्द करता है", "order_link": "आदेश देखें", "full_content": "पूरा विवरण", "other_details": "अन्य जानकारी", "read_full": "पूरी सूचना देखें",
+    "tender_issue_date": "निविदा जारी तिथि",
+    "tender_submission_last_date": "निविदा जमा अंतिम तिथि",
+    "tender_opening_date": "निविदा खोलने की तिथि",
 }
 _LABELS_EN = {
     "reference_number": "Reference No", "issuing_authority": "Issuing Authority", "issuing_date": "Issuing Date", "contact_person": "Contact Person", "contact_number": "Contact Number", "email": "Email", "helpline_number": "Helpline", "official_address": "Official Address", "important_instructions": "Important Instructions", "course_name": "Course", "course_level": "Course Level", "session": "Session", "admission_mode": "Admission Mode", "entrance_exam_name": "Entrance Exam", "eligibility": "Eligibility", "eligibility_marks": "Eligibility Marks", "age_criteria": "Age Criteria", "application_fee": "Application Fee", "fee_structure": "Fee Structure", "total_seats": "Total Seats", "reservation_details": "Reservation Details", "apply_start_date": "Application Starts", "last_date": "Last Date", "counselling_date": "Counselling Date", "apply_link": "Apply Online", "prospectus_link": "Prospectus", "documents_required": "Documents Required", "hostel_available": "Hostel Available", "result_for": "Result For", "exam_name": "Exam", "semester": "Semester", "result_date": "Result Date", "result_link": "Check Result", "result_type": "Result Type", "merit_list_link": "Merit List", "cutoff_marks": "Cutoff Marks", "total_selected": "Total Selected", "next_stage": "Next Stage", "next_stage_date": "Next Stage Date", "rechecking_last_date": "Rechecking Last Date", "rechecking_link": "Rechecking Link", "rechecking_fee": "Rechecking Fee", "exam_date": "Exam Date", "exam_time": "Exam Time", "exam_duration": "Exam Duration", "exam_center": "Exam Center", "reporting_time": "Reporting Time", "download_start_date": "Download Starts", "download_last_date": "Download Last Date", "admit_card_link": "Download Admit Card", "instructions": "Instructions", "total_questions": "Total Questions", "answer_key_link": "View Answer Key", "objection_start_date": "Objection Starts", "objection_last_date": "Objection Last Date", "objection_fee": "Objection Fee", "per_question_fee": "Per Question Fee", "objection_mode": "Objection Mode", "objection_address": "Objection Address", "payment_mode": "Payment Mode", "exam_start_date": "Exam Starts", "exam_end_date": "Exam Ends", "timetable_link": "Timetable", "subject_list": "Subjects", "paper_code": "Paper Code", "practical_dates": "Practical Dates", "viva_dates": "Viva Dates", "revaluation_start_date": "Revaluation Starts", "revaluation_last_date": "Revaluation Last Date", "revaluation_fee": "Revaluation Fee", "revaluation_mode": "Revaluation Mode", "certificate_type": "Certificate Type", "processing_time": "Processing Time", "fee_type": "Fee Type", "amount": "Amount", "late_fee": "Late Fee", "payment_link": "Payment Link", "event_type": "Event Type", "event_date": "Event Date", "event_description": "Description", "calendar_link": "View Calendar", "syllabus_link": "View Syllabus", "effective_from": "Effective From", "scheme_name": "Scheme", "scholarship_amount": "Scholarship Amount", "applicable_category": "Applicable Category", "income_limit": "Income Limit", "apply_mode": "Application Mode", "portal_name": "Portal", "company_name": "Company", "job_role": "Job Role", "package": "Package", "location": "Location", "drive_date": "Drive Date", "tender_no": "Tender No", "tender_type": "Tender Type", "work_description": "Work Description", "estimated_cost": "Estimated Cost", "emd_amount": "EMD", "tender_fee": "Tender Fee", "submission_last_date": "Submission Last Date", "opening_date": "Opening Date", "tender_document_link": "Tender Document", "eligibility_criteria": "Eligibility", "post_name": "Post Name", "total_posts": "Total Posts", "post_breakdown": "Post-wise Breakdown", "qualification": "Qualification", "age_limit": "Age Limit", "pay_scale": "Pay Scale", "advertisement_no": "Advertisement No", "selection_process": "Selection Process", "experience_required": "Experience Required", "posting_location": "Posting Location", "interview_date": "Interview Date", "venue": "Venue", "subject": "Subject", "notice_type": "Notice Type", "applicable_to": "Applicable To", "action_required": "Action Required", "action_deadline": "Action Deadline", "effective_date": "Effective Date", "supersedes": "Supersedes", "order_link": "View Order", "full_content": "Full Content", "other_details": "Other Details", "read_full": "View Full Notice",
+    "tender_issue_date": "Tender Issue Date",
+    "tender_submission_last_date": "Tender Submission Last Date",
+    "tender_opening_date": "Tender Opening Date",
 }
 _CATEGORY_NAMES_HI = {"admission": "प्रवेश", "result": "परिणाम", "admit_card": "प्रवेश पत्र", "answer_key": "उत्तर कुंजी", "exam_schedule": "परीक्षा कार्यक्रम", "revaluation": "पुनर्मूल्यांकन", "migration_certificate": "माइग्रेशन / प्रमाण पत्र", "fee_structure": "शुल्क संरचना", "academic_calendar": "शैक्षणिक कैलेंडर", "syllabus": "पाठ्यक्रम", "timetable": "समय सारिणी", "scholarship": "छात्रवृत्ति", "placement": "प्लेसमेंट", "tender": "निविदा", "vacancy": "भर्ती", "notice": "सूचना", "other": "अन्य"}
 _CATEGORY_NAMES_EN = {"admission": "Admission", "result": "Result", "admit_card": "Admit Card", "answer_key": "Answer Key", "exam_schedule": "Exam Schedule", "revaluation": "Revaluation", "migration_certificate": "Migration / Certificate", "fee_structure": "Fee Structure", "academic_calendar": "Academic Calendar", "syllabus": "Syllabus", "timetable": "Timetable", "scholarship": "Scholarship", "placement": "Placement", "tender": "Tender", "vacancy": "Vacancy", "notice": "Notice", "other": "Other"}
@@ -4482,8 +4660,22 @@ def _format_placement(lines, c):
 
 
 def _format_tender(lines, c):
-    _line(lines, "📋", "tender_no", _safe_str(c.get("tender_no"))); _line(lines, "📋", "tender_type", _safe_str(c.get("tender_type"))); _line(lines, "📝", "work_description", _safe_str(c.get("work_description"))); _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority"))); _line(lines, "💰", "estimated_cost", _safe_str(c.get("estimated_cost"))); _line(lines, "💳", "emd_amount", _safe_str(c.get("emd_amount"))); _line(lines, "📄", "tender_fee", _safe_str(c.get("tender_fee"))); _line(lines, "📅", "submission_last_date", _safe_str(c.get("submission_last_date"))); _line(lines, "📅", "opening_date", _safe_str(c.get("opening_date"))); _line(lines, "📋", "eligibility_criteria", _safe_str(c.get("eligibility_criteria"))); _link_line(lines, "📄", "tender_document_link", _safe_str(c.get("tender_document_link"), 500)); _format_extra_details(lines, c)
-
+    tender_issue = _safe_str(c.get("tender_issue_date")) or _safe_str(c.get("issuing_date"))
+    _line(lines, "📅", "tender_issue_date", tender_issue)
+    _line(lines, "📋", "tender_no", _safe_str(c.get("tender_no")))
+    _line(lines, "📋", "tender_type", _safe_str(c.get("tender_type")))
+    _line(lines, "📝", "work_description", _safe_str(c.get("work_description")))
+    _line(lines, "🏢", "issuing_authority", _safe_str(c.get("issuing_authority")))
+    _line(lines, "💰", "estimated_cost", _safe_str(c.get("estimated_cost")))
+    _line(lines, "💳", "emd_amount", _safe_str(c.get("emd_amount")))
+    _line(lines, "📄", "tender_fee", _safe_str(c.get("tender_fee")))
+    _line(lines, "📅", "tender_submission_last_date", _safe_str(c.get("tender_submission_last_date")))
+    _line(lines, "📅", "submission_last_date", _safe_str(c.get("submission_last_date")))
+    _line(lines, "📅", "tender_opening_date", _safe_str(c.get("tender_opening_date")))
+    _line(lines, "📅", "opening_date", _safe_str(c.get("opening_date")))
+    _line(lines, "📋", "eligibility_criteria", _safe_str(c.get("eligibility_criteria")))
+    _link_line(lines, "📄", "tender_document_link", _safe_str(c.get("tender_document_link"), 500))
+    _format_extra_details(lines, c)
 
 def _format_vacancy(lines, c):
     total = c.get("total_posts")
@@ -4972,17 +5164,108 @@ def _parse_upload_date(raw):
 def suppress_stale_pending_and_ready(state):
     changed = 0
     for record in state.get("items", {}).values():
-        if not isinstance(record, dict) or record.get("status") not in {"pending", "ready"}: continue
+        if not isinstance(record, dict) or record.get("status") not in {"pending", "ready"}:
+            continue
         effective_title = record.get("explicit_title") or record.get("title", "")
-        if _is_stale_notice(effective_title, record.get("context", ""), record.get("url", ""), upload_date=_parse_upload_date(record.get("upload_date")), pdf_text=record.get("pdf_text", "")):
+        pdf_text = record.get("pdf_text", "")
+        strict_pdf = bool(record.get("pdf_extracted") and pdf_text)
+
+        stale = _is_stale_notice(
+            effective_title,
+            record.get("context", ""),
+            record.get("url", ""),
+            upload_date=_parse_upload_date(record.get("upload_date")),
+            pdf_text=pdf_text,
+            strict_pdf_date=strict_pdf,
+        )
+
+        # Defence-in-depth: exact date first, year fallback only if no date found
+        if not stale and strict_pdf:
+            expired, kind, ev = _is_expired_by_date_or_year(pdf_text)
+            if expired:
+                stale = True
+                print(
+                    f"[PERSISTED-YEAR-FALLBACK] kind={kind} evidence={ev} "
+                    f"title={effective_title[:70]}",
+                    file=sys.stderr,
+                )
+
+        if stale:
             record["status"] = "baseline"
             record["classification"] = None
             record["summary"] = ""
             record["last_error"] = f"Stale persisted item suppressed (limit={STALE_NOTICE_DAYS}d or old year)"
             changed += 1
-    if changed: print(f"[STALE-SKIP] Suppressed {changed} stale persisted item(s)", file=sys.stderr)
+
+    if changed:
+        print(f"[STALE-SKIP] Suppressed {changed} stale persisted item(s)", file=sys.stderr)
     return changed
 
+# Per-category expiry rules:
+#   "min"  → earliest cutoff (apply/submit window) — first cutoff बीता = expired
+#   "max"  → latest event date — कोई भी event future में है = valid
+#   None   → evergreen (कोई hard expiry नहीं)
+#
+# Only primary_fields से expiry तय होती है।
+# informational dates (issue_date, download_start_date, effective_date) formatter में
+# दिखते हैं पर expiry check में नहीं आते।
+_EXPIRY_RULES = {
+    "admission":             ("min", ("last_date", "counselling_date")),
+    "result":                ("max", ("rechecking_last_date", "next_stage_date", "result_date")),
+    "admit_card":            ("max", ("exam_date", "download_last_date")),
+    "answer_key":            ("min", ("objection_last_date",)),
+    "exam_schedule":         ("max", ("exam_end_date", "exam_start_date")),
+    "revaluation":           ("min", ("revaluation_last_date", "rechecking_last_date")),
+    "migration_certificate": ("min", ("action_deadline", "last_date")),
+    "fee_structure":         ("min", ("last_date", "fee_last_date")),
+    "academic_calendar":     ("max", ("event_date", "effective_from")),
+    "syllabus":              (None, ()),
+    "timetable":             ("max", ("exam_end_date", "exam_start_date")),
+    "scholarship":           ("min", ("last_date",)),
+    "placement":             ("min", ("last_date", "drive_date", "interview_date")),
+    "tender":                ("min", ("tender_submission_last_date", "submission_last_date")),
+    "vacancy":               ("min", ("last_date", "interview_date")),
+    "notice":                ("min", ("action_deadline", "effective_date")),
+    "other":                 (None, ()),
+}
+
+
+def _pre_send_expired_check(record, now=None):
+    """Final pre-Telegram expired-deadline gate.
+    Step 1: category-specific structured deadline fields (exact date priority).
+    Step 2: pdf_text fallback (exact date → year fallback).
+    Returns (expired: bool, reason: str)."""
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    cls = record.get("classification") or {}
+    cat = (cls.get("category") or "notice").lower()
+    rule, fields = _EXPIRY_RULES.get(cat, (None, ()))
+
+    if rule is not None and fields:
+        observed = []
+        for key in fields:
+            value = cls.get(key)
+            if not value:
+                continue
+            parsed = _extract_document_dates(str(value))
+            if parsed:
+                observed.append((key, max(parsed)))
+        if observed:
+            if rule == "max":
+                key, latest = max(observed, key=lambda kv: kv[1])
+            else:  # min
+                key, latest = min(observed, key=lambda kv: kv[1])
+            if latest.date() < today:
+                return True, f"expired_{cat}_{key}={latest.date().isoformat()}"
+            return False, f"active_{cat}_{key}={latest.date().isoformat()}"
+
+    pdf_text = record.get("pdf_text") or ""
+    if pdf_text.strip():
+        expired, kind, evidence = _is_expired_by_date_or_year(pdf_text, now=now)
+        if expired:
+            return True, f"expired_pdf_{kind}={evidence}"
+
+    return False, "no_explicit_deadline"
 
 def enqueue_persisted_pending(state, pending, max_pending_attempts, configured_site_ids):
     by_id = {iid: record for iid, record in pending}
@@ -5629,6 +5912,21 @@ def main():
                 file=sys.stderr
             )
             continue
+
+        # ═══ FINAL pre-Telegram expired-deadline gate (exact date first, year fallback) ═══
+        expired_final, expired_reason = _pre_send_expired_check(record)
+        if expired_final:
+            record["status"] = "baseline"
+            record["classification"] = None
+            record["summary"] = ""
+            record["last_error"] = f"Pre-send expired-deadline check: {expired_reason}"
+            record["terminal_at"] = utc_now()
+            print(
+                f"[PRE-SEND-EXPIRED] {expired_reason} | {str(record.get('title',''))[:80]}",
+                file=sys.stderr,
+            )
+            continue
+        # ══════════════════════════════════════════════════════════════════════════════════
 
         print(f"[ATTACHMENT-DIAGNOSTIC] site_id={record.get('site_id','unknown')} url={str(record.get('url',''))[:120]} pdf_attempts={record.get('pdf_attempts',0)} extracted={bool(record.get('pdf_extracted'))} text_chars={len(record.get('pdf_text','') or '')}", file=sys.stderr)
         attachment_ok, attachment_reason = _attachment_verification_gate(record)
