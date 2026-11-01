@@ -3,7 +3,7 @@ name: Jharkhand University Notice Monitor
 on:
   workflow_dispatch:
   schedule:
-    # Har 2 ghante mein run hoga (0 minute par)
+    # Har 2 ghante mein run
     - cron: '0 */2 * * *'
 
 permissions:
@@ -17,7 +17,8 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # ── Buffer: script MAX_RUN_SECONDS=6600 (110m) + 10m for state save ──
+    timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,9 +56,19 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+
+          # ── Layer 4 & 5 fallbacks (optional — blank se skip ho jayega) ──
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+          SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
+
+          # ── Feature flags ──
           JS_RENDER_ENABLED: 'true'
           TESSERACT_ENABLED: 'true'
           TESSERACT_LANG: 'hin+eng'
+
+          # ── Time budget: 110 min work + 15 min send reserve ──
+          MAX_RUN_SECONDS: '6600'
+          SEND_RESERVE_SECONDS: '900'
         run: python monitor.py
 
       # Always try to persist the latest state, even if scanning or notification
@@ -76,7 +87,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          # Add first so both tracked and newly-created state files are detected.
           git add -- state.json
           if ! git diff --cached --quiet; then
             git commit -m 'Update university monitor state [skip ci]'
@@ -89,9 +99,6 @@ jobs:
             echo "State push attempt ${attempt}/5"
             git fetch origin "$TARGET_BRANCH"
 
-            # Rebase our state commit onto the latest branch. If a concurrent
-            # external commit conflicts, abort cleanly and retry; never silently
-            # claim success when the state was not pushed.
             if ! git rebase "origin/$TARGET_BRANCH"; then
               git rebase --abort || true
               if [[ "$attempt" -eq 5 ]]; then
