@@ -1,6 +1,16 @@
 # ═══════════════════════════════════════════════════════════════════
 # Jharkhand University Notice Monitor — Python Dependencies
 # ═══════════════════════════════════════════════════════════════════
+#
+# Install:   pip install -r requirements.txt
+#
+# NOTE: Tesseract (Hindi OCR) aur Playwright Chromium browser
+#       pip packages NAHI hain — inhe monitor.yml ke separate steps
+#       mein install kiya jata hai (github actions):
+#         • sudo apt-get install -y tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+#         • python -m playwright install --with-deps chromium
+#
+# ═══════════════════════════════════════════════════════════════════
 
 # ─── HTTP / HTML ───
 requests>=2.32,<3
@@ -32,5 +42,5 @@ numpy>=1.24,<2
 # ─── Fuzzy string matching ───
 rapidfuzz>=3.9,<4
 
-# ─── JS rendering (Layer 3) ───
+# ─── JS rendering (Layer 3) — Python API only; browser installed via monitor.yml ───
 playwright>=1.40,<2
