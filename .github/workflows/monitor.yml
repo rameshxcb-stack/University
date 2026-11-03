@@ -61,6 +61,9 @@ jobs:
           CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
 
+          # ── JUT SSL bypass (websites.json mein verify_ssl:false hai; ye env isse honor karwati hai) ──
+          ALLOW_INSECURE_TLS: 'true'
+
           # ── Feature flags ──
           JS_RENDER_ENABLED: 'true'
           TESSERACT_ENABLED: 'true'
