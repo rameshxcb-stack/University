@@ -1,12 +1,12 @@
 {
   "scan": {
-    "request_timeout_seconds": 60,
+    "request_timeout_seconds": 30,
     "max_workers": 2,
     "max_items_per_site": 150,
     "max_discovery_pages_per_site": 18,
     "max_archive_pages_per_site": 35,
     "max_pagination_per_archive": 8,
-    "max_new_items_per_run": 35,
+    "max_new_items_per_run": 60,
     "gemini_batch_size": 3,
     "gemini_max_calls_per_run": 25,
     "retention_days": 90,
@@ -16,7 +16,7 @@
     "domain_delay_seconds": 0.4,
     "max_state_items": 6000,
     "max_state_bytes": 8000000,
-    "max_pending_attempts": 500,
+    "max_pending_attempts": 8,
     "stale_notice_days": 15,
     "site_alert_threshold": 3,
     "site_alert_cooldown_hours": 6,
