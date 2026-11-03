@@ -24,14 +24,6 @@ from urllib.robotparser import RobotFileParser
 
 import pdfplumber
 import requests
-try:
-    import curl_cffi.requests as curl_requests
-except ImportError:
-    curl_requests = None
-try:
-    import cloudscraper
-except ImportError:
-    cloudscraper = None
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from rapidfuzz.distance import Levenshtein
@@ -3551,8 +3543,22 @@ def discover_site(session, site, scan):
             "Accept-Encoding": "gzip, deflate, br",
         })
 
-    # Health pre-check is intentionally skipped: each page is tried through
-    # the configured fallback layers below. Failures are still recorded per page.
+    # Pre-scan health check.
+    health_state, health_detail = _site_health_check(
+        session, site, timeout=max(8, min(15, timeout))
+    )
+    if health_state != "OK":
+        print(
+            f"[SITE-DOWN] name={site['name']} site_id={site['id']} "
+            f"state={health_state} detail={_safe_error_detail(health_detail, 200)}",
+            file=sys.stderr,
+        )
+        return site["id"], [], [f"{health_state}: {health_detail}"], False
+
+    print(
+        f"[SITE-HEALTH] site_id={site['id']} state=OK detail={health_detail}",
+        file=sys.stderr,
+    )
 
     max_pages = scan["max_discovery_pages_per_site"]
     max_archive_pages = scan.get("max_archive_pages_per_site", 5)
@@ -3617,170 +3623,62 @@ def discover_site(session, site, scan):
 
             response = None
             response_text = None
-            response_content = b""
             rendered_from_waf = False
             final_url = page
             content_type = ""
-            scan_layer_used = None
-
-            # ═══════════════════════════════════════════════════════════════
-            # 5-LAYER ADVANCED FALLBACK SYSTEM
-            # L1 curl_cffi -> L2 cloudscraper -> L3 Playwright -> L4 Worker -> L5 ScrapingAnt
-            # ═══════════════════════════════════════════════════════════════
-
-            # LAYER 1: curl_cffi (browser TLS fingerprint impersonation)
-            if curl_requests is not None:
-                try:
-                    r_cffi = curl_requests.get(
-                        page, impersonate="chrome110", timeout=min(20, timeout),
-                        verify=verify_ssl, allow_redirects=True
-                    )
-                    if r_cffi.status_code == 200 and r_cffi.content:
-                        response_text = r_cffi.text
-                        response_content = r_cffi.content
-                        final_url = str(r_cffi.url)
-                        content_type = (r_cffi.headers.get("content-type") or "").lower()
-                        scan_layer_used = "L1-curl_cffi"
-                        print(f"[SCAN-L1] OK: {page[:70]}", file=sys.stderr)
-                    else:
-                        print(f"[SCAN-L1-FAIL] HTTP {r_cffi.status_code}: {page[:70]}", file=sys.stderr)
-                except Exception as e:
-                    print(f"[SCAN-L1-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
-
-            # LAYER 2: cloudscraper
-            if not response_text and cloudscraper is not None:
-                try:
-                    scraper = cloudscraper.create_scraper(
-                        browser={"browser": "chrome", "platform": "windows", "mobile": False},
-                        delay=2
-                    )
-                    r_cs = scraper.get(
-                        page, timeout=min(25, timeout), verify=verify_ssl,
-                        allow_redirects=True
-                    )
-                    if r_cs.status_code == 200 and r_cs.content:
-                        response_text = r_cs.text
-                        response_content = r_cs.content
-                        final_url = str(r_cs.url)
-                        content_type = (r_cs.headers.get("content-type") or "").lower()
-                        scan_layer_used = "L2-cloudscraper"
-                        print(f"[SCAN-L2] OK: {page[:70]}", file=sys.stderr)
-                    else:
-                        print(f"[SCAN-L2-FAIL] HTTP {r_cs.status_code}: {page[:70]}", file=sys.stderr)
-                except Exception as e:
-                    print(f"[SCAN-L2-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
-
-            # LAYER 3: Stealth Playwright (JS rendering / WAF retry)
-            if (
-                not response_text and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE
-                and js_render_count < JS_MAX_RENDER_PER_SITE
-                and site.get("js_render", "auto") != "never"
-            ):
-                try:
-                    rendered_html, rendered_url, js_method = _render_with_playwright(
-                        page, timeout_ms=timeout * 1000,
-                        wait_for_selector=site.get("js_wait_for_selector"),
-                        wait_after_ms=site.get("js_wait_after_ms"),
-                        scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
-                        selector_timeout_ms=site.get("js_selector_timeout_ms"),
-                        ignore_https_errors=not site.get("verify_ssl", True),
-                        use_stealth=True, proxy=None
-                    )
+            try:
+                response = session.get(page, timeout=timeout, allow_redirects=True, verify=verify_ssl)
+                final_url = canonical_url(response.url)
+                content_type = response.headers.get("content-type", "").lower()
+                if site.get("id") == "rims-ranchi":
+                    print(f"[RIMS-STATUS] url={page[:120]} http={response.status_code} ct={(content_type or '')[:40]} bytes={len(response.content)}", file=sys.stderr)
+            except requests.RequestException as request_exc:
+                can_browser_retry = (site.get("js_render", "auto") != "never" and JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE)
+                if can_browser_retry:
+                    print(f"[NETWORK-RETRY] {type(request_exc).__name__}; trying Playwright: {page}", file=sys.stderr)
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
                     js_render_count += 1
                     if rendered_html:
                         response_text = rendered_html
-                        response_content = rendered_html.encode("utf-8", errors="ignore")
                         final_url = _canonical_spa_url(rendered_url or page)
                         content_type = "text/html"
                         rendered_from_waf = True
-                        scan_layer_used = "L3-Playwright"
-                        print(f"[SCAN-L3] OK: {page[:70]} ({js_method})", file=sys.stderr)
-                    else:
-                        print(f"[SCAN-L3-FAIL] Empty render: {page[:70]} ({js_method})", file=sys.stderr)
-                except Exception as e:
-                    print(f"[SCAN-L3-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
+                        print(f"[NETWORK-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)", file=sys.stderr)
+                    else: print(f"[NETWORK-RETRY-FAIL] {page[:80]}: {type(request_exc).__name__}; {js_method}", file=sys.stderr)
+                if response_text is None: raise request_exc
 
-            # LAYER 4: Cloudflare Worker (optional; configure CF_WORKER_URL secret)
-            if not response_text:
-                cf_worker_url = os.getenv("CF_WORKER_URL", "").strip()
-                if cf_worker_url:
-                    try:
-                        proxy_url = cf_worker_url + ("&" if "?" in cf_worker_url else "?") + urlencode({"url": page})
-                        r_cf = requests.get(proxy_url, timeout=min(40, max(10, timeout)))
-                        if r_cf.status_code == 200 and r_cf.content:
-                            response_text = r_cf.text
-                            response_content = r_cf.content
-                            final_url = page
-                            content_type = (r_cf.headers.get("content-type") or "text/html").lower()
-                            scan_layer_used = "L4-Cloudflare-Worker"
-                            print(f"[SCAN-L4] OK via Cloudflare Worker: {page[:70]}", file=sys.stderr)
-                        else:
-                            print(f"[SCAN-L4-FAIL] HTTP {r_cf.status_code}: {page[:70]}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"[SCAN-L4-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
+            if response is not None and response.status_code in (403, 503):
+                if JS_RENDER_ENABLED and _PLAYWRIGHT_AVAILABLE and js_render_count < JS_MAX_RENDER_PER_SITE:
+                    print(f"[WAF-RETRY] HTTP {response.status_code}; trying Playwright: {page}", file=sys.stderr)
+                    rendered_html, rendered_url, js_method = _render_with_playwright(page, timeout_ms=timeout * 1000, wait_for_selector=site.get("js_wait_for_selector"), wait_after_ms=site.get("js_wait_after_ms"), scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM), selector_timeout_ms=site.get("js_selector_timeout_ms"), ignore_https_errors=not site.get("verify_ssl", True), use_stealth=use_stealth_for_site)
+                    js_render_count += 1
+                    if rendered_html:
+                        response_text = rendered_html
+                        final_url = _canonical_spa_url(rendered_url)
+                        content_type = "text/html"
+                        rendered_from_waf = True
+                        print(f"[WAF-RETRY-OK] {page[:80]} ({js_method}, {len(rendered_html)} chars)", file=sys.stderr)
+                    else: print(f"[WAF-RETRY-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
+                if response_text is None: raise RuntimeError(f"HTTP {response.status_code}; Playwright fallback unavailable or failed")
+            elif response is not None and response.status_code >= 400: raise RuntimeError(f"HTTP {response.status_code}")
 
-            # LAYER 5: ScrapingAnt (optional; configure SCRAPINGANT_API_KEY secret)
-            if not response_text:
-                sa_api_key = os.getenv("SCRAPINGANT_API_KEY", "").strip()
-                if sa_api_key:
-                    try:
-                        print(f"[SCAN-L5] Trying ScrapingAnt: {page[:60]}", file=sys.stderr)
-                        sa_url = "https://api.scrapingant.com/v2/general?" + urlencode({
-                            "url": page,
-                            "x-api-key": sa_api_key,
-                        })
-                        r_sa = requests.get(sa_url, timeout=min(60, max(15, timeout)))
-                        if r_sa.status_code == 200 and r_sa.content:
-                            response_text = r_sa.text
-                            response_content = r_sa.content
-                            final_url = page
-                            content_type = (r_sa.headers.get("content-type") or "text/html").lower()
-                            scan_layer_used = "L5-ScrapingAnt"
-                            print(f"[SCAN-L5] OK via ScrapingAnt: {page[:70]}", file=sys.stderr)
-                        else:
-                            print(f"[SCAN-L5-FAIL] HTTP {r_sa.status_code}: {page[:70]}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"[SCAN-L5-FAIL] {type(e).__name__}: {page[:70]}", file=sys.stderr)
-
-            if not response_text:
-                raise RuntimeError(f"All configured scanning layers failed for {page}")
-
-            print(
-                f"[SCAN-DONE] site_id={site.get('id', 'unknown')} layer={scan_layer_used} "
-                f"bytes={len(response_content)} content_type={content_type[:50]!r}",
-                file=sys.stderr
-            )
-
-            # CRITICAL: Direct PDF / Office document detection before HTML parsing.
-            if content_type:
+            if response is not None and not rendered_from_waf and content_type:
                 ct_lower = content_type.lower()
-                is_pdf_resp = _looks_like_pdf_response(response_content, ct_lower, final_url)
-                is_office_doc = (
-                    "application/vnd.openxmlformats" in ct_lower
-                    or "application/msword" in ct_lower
-                    or "application/vnd.ms-excel" in ct_lower
-                    or "application/vnd.ms-powerpoint" in ct_lower
-                )
+                is_pdf_resp = _looks_like_pdf_response(response.content, ct_lower, final_url)
+                is_office_doc = ("application/vnd.openxmlformats" in ct_lower or "application/msword" in ct_lower or "application/vnd.ms-excel" in ct_lower or "application/vnd.ms-powerpoint" in ct_lower)
                 if is_pdf_resp:
                     filename = final_url.rsplit("/", 1)[-1] or "PDF Notice"
-                    candidates[final_url] = {
-                        "url": final_url, "title": clean_text(filename, 300),
-                        "context": "Direct PDF notice", "source_page": page,
-                        "is_pdf": True, "score": 3, "upload_date": None
-                    }
+                    candidates[final_url] = {"url": final_url, "title": clean_text(filename, 300), "context": "Direct PDF notice", "source_page": page, "is_pdf": True, "score": 3, "upload_date": None}
                     successful_pages += 1
                     continue
                 if is_office_doc:
                     filename = final_url.rsplit("/", 1)[-1] or "Document Notice"
-                    candidates[final_url] = {
-                        "url": final_url, "title": clean_text(filename, 300),
-                        "context": "Direct document notice", "source_page": page,
-                        "is_pdf": True, "score": 3, "upload_date": None
-                    }
+                    print(f"[DOC-NOTICE] Office document detected: {filename[:80]}", file=sys.stderr)
+                    candidates[final_url] = {"url": final_url, "title": clean_text(filename, 300), "context": "Direct document notice", "source_page": page, "is_pdf": True, "score": 3, "upload_date": None}
                     successful_pages += 1
                     continue
                 if "html" not in ct_lower and "xhtml" not in ct_lower:
-                    print(f"[SKIP] Non-HTML content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
+                    print(f"[SKIP] Non-HTML, non-document content-type={ct_lower[:60]!r} at {page}", file=sys.stderr)
                     continue
 
             js_mode = site.get("js_render", "auto")
@@ -3796,7 +3694,7 @@ def discover_site(session, site, scan):
                     final_url = _canonical_spa_url(rendered_url)
                     print(f"[JS-OK] {page[:80]} -> {len(rendered_html)} chars ({js_method})", file=sys.stderr)
                 else:
-                    response_text = response.text if response is not None else (response_text or "")
+                    response_text = response.text
                     print(f"[JS-FAIL] {page[:80]}: {js_method}", file=sys.stderr)
             elif response_text is None: response_text = response.text if response is not None else ""
 
@@ -4413,7 +4311,8 @@ def validate_telegram_token(token):
 def send_telegram(token, chat_id, text):
     for attempt in range(3):
         try:
-            response = telegram_request("sendMessage", token, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False})
+            # Timeout 20 से बढ़ाकर 30 कर दिया गया है
+            response = telegram_request("sendMessage", token, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=30)
             if response.ok: return (True, False, "sent")
             try:
                 data = response.json()
@@ -4430,6 +4329,9 @@ def send_telegram(token, chat_id, text):
                 time.sleep(min(10, 2 ** attempt))
                 continue
             return (False, False, f"Telegram HTTP {response.status_code}: {description}")
+        except requests.exceptions.ReadTimeout as exc:
+            # ReadTimeout का मतलब है मैसेज सर्वर तक पहुँच चुका है, इसलिए रीट्राई नहीं करेंगे (डुप्लीकेट रोकने के लिए)
+            return (True, False, f"Telegram ReadTimeout (assumed delivered): {exc}")
         except requests.RequestException as exc:
             if attempt < 2:
                 time.sleep(min(10, 2 ** attempt))
@@ -4443,7 +4345,8 @@ def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
         try:
             files = {"document": (filename, pdf_bytes, "application/pdf")}
             data = {"chat_id": chat_id, "caption": caption[:TELEGRAM_CAPTION_LIMIT], "parse_mode": "HTML"}
-            response = requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data=data, files=files, timeout=60)
+            # Timeout 60 से बढ़ाकर 90 कर दिया गया है (PDF अपलोड होने में समय लगता है)
+            response = requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data=data, files=files, timeout=90)
             if response.ok: return (True, False, "sent")
             try:
                 rdata = response.json()
@@ -4460,6 +4363,9 @@ def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
                 time.sleep(min(10, 2 ** attempt))
                 continue
             return (False, False, f"Telegram HTTP {response.status_code}: {description}")
+        except requests.exceptions.ReadTimeout as exc:
+            # ReadTimeout का मतलब है PDF सर्वर तक पहुँच चुकी है, रीट्राई नहीं करेंगे
+            return (True, False, f"Telegram ReadTimeout (assumed delivered): {exc}")
         except requests.RequestException as exc:
             if attempt < 2:
                 time.sleep(min(10, 2 ** attempt))
