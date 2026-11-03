@@ -4980,7 +4980,7 @@ def _fetch_images_for_batch(batch, scan, send_deadline=None):
             print(f"[WARN] Image OCR skipped safely: {exc}", file=sys.stderr)
 
 
-def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
+def _fetch_pdfs_for_batch(batch, scan, send_deadline=None, state=None):
     targets = [(iid, record) for iid, record in batch if _should_fetch_pdf(record)]
     if not targets: return
     default_timeout = scan["request_timeout_seconds"]
@@ -5049,7 +5049,8 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
                     record["classification"] = None
                     record["summary"] = ""
                     record["last_error"] = "Date review required: readable PDF has old batch/session year but no credible issue date"
-                    add_review_item(state, record, "undated_old_batch_requires_review")
+                    if state is not None:
+                        add_review_item(state, record, "undated_old_batch_requires_review")
                     print(
                         f"[DATE-REVIEW-HOLD] Not auto-sent: old batch/session and no credible PDF issue date: "
                         f"{str(effective_title)[:90]}",
@@ -5729,7 +5730,7 @@ def main():
             active_batch.append((iid, record))
         batch = active_batch
         if not batch: continue
-        try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline)
+        try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline, state=state)
         except Exception as exc: print(f"[WARN] PDF batch fetch failed: {exc}", file=sys.stderr)
         try: _fetch_images_for_batch(batch, scan, send_deadline=send_deadline)
         except Exception as exc: print(f"[WARN] Image OCR batch failed safely: {exc}", file=sys.stderr)
