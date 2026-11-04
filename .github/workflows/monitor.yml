@@ -62,7 +62,7 @@ jobs:
         run: |
           python - <<'PYEOF'
           from pathlib import Path
-          import sys
+          import sys, ast
 
           path = Path("monitor.py")
           if not path.exists():
@@ -87,8 +87,6 @@ jobs:
 
           patched = content.replace(old, new, 1)
           path.write_text(patched, encoding="utf-8")
-
-          import ast
           ast.parse(path.read_text(encoding="utf-8"))
           print("[PATCH] Successfully replaced 500 -> 8 in monitor.py")
           print(f"[PATCH] Old line: {old}")
