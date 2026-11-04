@@ -2,9 +2,6 @@ name: Jharkhand University Notice Monitor
 
 on:
   workflow_dispatch:
-  schedule:
-    # Har 2 ghante mein run
-    - cron: '0 */2 * * *'
 
 permissions:
   contents: write
