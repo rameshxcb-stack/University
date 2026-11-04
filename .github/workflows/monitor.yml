@@ -51,6 +51,50 @@ jobs:
       - name: Run self-tests
         run: python monitor.py --test
 
+      # ══════════════════════════════════════════════════════════════════
+      # Runtime patch: max_pending_attempts floor 500 → 8
+      # Purpose: allow websites.json max_pending_attempts=8 to actually be
+      #          enforced (monitor.py has a hard-coded max(500, value) floor).
+      # This modifies monitor.py ONLY in the GitHub runner's workspace.
+      # The file in the repository is NOT changed — each run re-patches.
+      # ══════════════════════════════════════════════════════════════════
+      - name: Patch monitor.py (max_pending_attempts 500 -> 8)
+        run: |
+          python - <<'PYEOF'
+          from pathlib import Path
+          import sys
+
+          path = Path("monitor.py")
+          if not path.exists():
+              print("ERROR: monitor.py not found", file=sys.stderr)
+              sys.exit(1)
+
+          content = path.read_text(encoding="utf-8")
+          old = 'scan["max_pending_attempts"] = max(500, int(scan["max_pending_attempts"]))'
+          new = 'scan["max_pending_attempts"] = max(8, int(scan["max_pending_attempts"]))'
+
+          if new in content:
+              print("[PATCH] Already patched — max(8, ...) present. Skipping.")
+              sys.exit(0)
+
+          if old not in content:
+              print("ERROR: Expected line not found in monitor.py:", file=sys.stderr)
+              print("  Looking for:", old, file=sys.stderr)
+              for i, line in enumerate(content.splitlines(), 1):
+                  if "max_pending_attempts" in line:
+                      print(f"  Line {i}: {line}", file=sys.stderr)
+              sys.exit(1)
+
+          patched = content.replace(old, new, 1)
+          path.write_text(patched, encoding="utf-8")
+
+          import ast
+          ast.parse(path.read_text(encoding="utf-8"))
+          print("[PATCH] Successfully replaced 500 -> 8 in monitor.py")
+          print(f"[PATCH] Old line: {old}")
+          print(f"[PATCH] New line: {new}")
+          PYEOF
+
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -101,6 +145,13 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "State push attempt ${attempt}/5"
             git fetch origin "$TARGET_BRANCH"
+
+            # ══════════════════════════════════════════════════════════════
+            # IMPORTANT: Discard the runtime patch to monitor.py before rebase.
+            # The patch is applied fresh every run, so discarding it here is
+            # safe and keeps the working tree clean for git rebase.
+            # ══════════════════════════════════════════════════════════════
+            git reset --hard HEAD
 
             if ! git rebase "origin/$TARGET_BRANCH"; then
               git rebase --abort || true
