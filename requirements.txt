@@ -4,11 +4,13 @@
 #
 # Install:   pip install -r requirements.txt
 #
-# NOTE: Tesseract (Hindi OCR) aur Playwright Chromium browser
-#       pip packages NAHI hain — inhe monitor.yml ke separate steps
-#       mein install kiya jata hai (github actions):
-#         • sudo apt-get install -y tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+# NOTE: Tesseract (Hindi OCR), xvfb/xauth, and browser binaries
+#       (Chromium, Patchright, Camoufox) are NOT pip packages —
+#       they are installed in monitor.yml's separate steps:
+#         • sudo apt-get install -y tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng xvfb xauth
 #         • python -m playwright install --with-deps chromium
+#         • python -m patchright install --with-deps chromium   # L3.5
+#         • python -m camoufox fetch                            # L4
 #
 # ═══════════════════════════════════════════════════════════════════
 
@@ -44,3 +46,19 @@ rapidfuzz>=3.9,<4
 
 # ─── JS rendering (Layer 3) — Python API only; browser installed via monitor.yml ───
 playwright>=1.40,<2
+
+# ═══════════════════════════════════════════════════════════════════
+# STEALTH LAYERS (L3.5 & L4) — Cloudflare / Turnstile bypass
+# ───────────────────────────────────────────────────────────────────
+# Python packages here; browsers installed via monitor.yml.
+# Both are pure fallbacks — no changes to L1/L2/L3 behavior.
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── L3.5: Patchright — stealth-patched Playwright (Chromium) ───
+# Patches CDP/automation detection leaks. Used ONLY when L3 fails.
+patchright>=1.40,<2
+
+# ─── L4: Camoufox — Firefox-based anti-detect browser ───
+# Alternate fingerprint when both Chromium layers fail.
+# Needs Firefox system libs (installed in monitor.yml).
+camoufox<1
