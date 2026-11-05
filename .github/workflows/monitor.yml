@@ -14,7 +14,7 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    # ── Buffer: script MAX_RUN_SECONDS=6600 (110m) + 10m for state save ──
+    # ── Buffer: MAX_RUN_SECONDS=6600 (110m) + install + state save ──
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -30,10 +30,15 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install Tesseract OCR (Hindi + English)
+      # ══════════════════════════════════════════════════════════════════
+      # Tesseract OCR + xvfb/xauth (xvfb-run requires xauth)
+      # ══════════════════════════════════════════════════════════════════
+      - name: Install Tesseract OCR + Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng \
+            xvfb xauth x11-utils
           tesseract --version
           tesseract --list-langs
 
@@ -42,19 +47,67 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium (L3)
         run: python -m playwright install --with-deps chromium
+
+      # ══════════════════════════════════════════════════════════════════
+      # L3.5: Patchright — stealth-patched Playwright Chromium
+      # ══════════════════════════════════════════════════════════════════
+      - name: Install Patchright Chromium (L3.5)
+        run: |
+          pip install "patchright<2,>=1.40"
+          python -m patchright install --with-deps chromium
+
+      # ══════════════════════════════════════════════════════════════════
+      # L4: Camoufox — Firefox-based anti-detect browser
+      #   || true ensures a transient apt hiccup does not fail the job
+      # ══════════════════════════════════════════════════════════════════
+      - name: Install Camoufox Firefox (L4)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-0t64 libdbus-glib-1-2t64 libxt6t64 \
+            libx11-xcb1 libxcb-shm0 libxcb-util1 libasound2t64 \
+            xvfb xauth || true
+          pip install "camoufox<1"
+          python -m camoufox fetch
+
+      # ══════════════════════════════════════════════════════════════════
+      # Preflight: verify both new browsers launch (fail fast if broken)
+      # ══════════════════════════════════════════════════════════════════
+      - name: Verify new browser layers
+        run: |
+          xvfb-run --auto-servernum python - <<'PYEOF'
+          import sys
+          try:
+              from patchright.sync_api import sync_playwright
+              with sync_playwright() as p:
+                  b = p.chromium.launch(headless=False, args=["--no-sandbox","--disable-dev-shm-usage"])
+                  pg = b.new_page()
+                  pg.goto("about:blank")
+                  b.close()
+              print("[VERIFY] Patchright Chromium OK (headless=False via xvfb)")
+          except Exception as e:
+              print(f"[VERIFY] Patchright FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
+          python - <<'PYEOF'
+          import sys
+          try:
+              from camoufox.sync_api import Camoufox
+              with Camoufox(headless=True) as b:
+                  pg = b.new_page()
+                  pg.goto("about:blank")
+              print("[VERIFY] Camoufox Firefox OK (headless=True)")
+          except Exception as e:
+              print(f"[VERIFY] Camoufox FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
 
       - name: Run self-tests
         run: python monitor.py --test
 
       # ══════════════════════════════════════════════════════════════════
-      # Runtime patch: websites.json
-      #   gemini_batch_size: 3 -> 5
-      #   gemini_max_calls_per_run: 15 -> 20
-      # Purpose: increase per-run processing budget from 45 (3x15) to 100 (5x20).
-      # This modifies websites.json ONLY in the GitHub runner's workspace.
-      # The file in the repository is NOT changed — each run re-patches.
+      # Runtime patch: websites.json (batch=5, calls=20)
       # ══════════════════════════════════════════════════════════════════
       - name: Patch websites.json (batch=5, calls=20)
         run: |
@@ -90,10 +143,6 @@ jobs:
 
       # ══════════════════════════════════════════════════════════════════
       # Runtime patch: max_pending_attempts floor 500 → 8
-      # Purpose: allow websites.json max_pending_attempts=8 to actually be
-      #          enforced (monitor.py has a hard-coded max(500, value) floor).
-      # This modifies monitor.py ONLY in the GitHub runner's workspace.
-      # The file in the repository is NOT changed — each run re-patches.
       # ══════════════════════════════════════════════════════════════════
       - name: Patch monitor.py (max_pending_attempts 500 -> 8)
         run: |
@@ -116,7 +165,6 @@ jobs:
 
           if old not in content:
               print("ERROR: Expected line not found in monitor.py:", file=sys.stderr)
-              print("  Looking for:", old, file=sys.stderr)
               for i, line in enumerate(content.splitlines(), 1):
                   if "max_pending_attempts" in line:
                       print(f"  Line {i}: {line}", file=sys.stderr)
@@ -126,17 +174,10 @@ jobs:
           path.write_text(patched, encoding="utf-8")
           ast.parse(path.read_text(encoding="utf-8"))
           print("[PATCH] Successfully replaced 500 -> 8 in monitor.py")
-          print(f"[PATCH] Old line: {old}")
-          print(f"[PATCH] New line: {new}")
           PYEOF
 
       # ══════════════════════════════════════════════════════════════════
       # Runtime patch: per-run hard cap 60 → 150
-      # Purpose: monitor.py caps items at min(batch_size * max_calls, 60).
-      #          With batch=5 and calls=20, 5x20=100 would still be capped
-      #          to 60. Raising the cap to 150 makes the effective budget 100.
-      # This modifies monitor.py ONLY in the GitHub runner's workspace.
-      # The file in the repository is NOT changed — each run re-patches.
       # ══════════════════════════════════════════════════════════════════
       - name: Patch monitor.py (per-run hard cap 60 -> 150)
         run: |
@@ -159,7 +200,6 @@ jobs:
 
           if old not in content:
               print("ERROR: Expected line not found in monitor.py:", file=sys.stderr)
-              print("  Looking for:", old, file=sys.stderr)
               for i, line in enumerate(content.splitlines(), 1):
                   if "max_items_this_run" in line:
                       print(f"  Line {i}: {line}", file=sys.stderr)
@@ -169,35 +209,286 @@ jobs:
           path.write_text(patched, encoding="utf-8")
           ast.parse(path.read_text(encoding="utf-8"))
           print("[PATCH] Successfully replaced 60 -> 150 in monitor.py")
-          print(f"[PATCH] Old line: {old}")
-          print(f"[PATCH] New line: {new}")
           PYEOF
 
+      # ══════════════════════════════════════════════════════════════════
+      # Stealth wrapper — runtime monkey-patch for _render_with_playwright
+      #   L3 (vanilla) → L3.5 (Patchright) → L4 (Camoufox)
+      #   Only retries when vanilla fails or returns a block page
+      # ══════════════════════════════════════════════════════════════════
+      - name: Create stealth wrapper
+        run: |
+          cat > /tmp/stealth_runner.py <<'PYEOF'
+          """Runtime wrapper for monitor.py adding L3.5 (Patchright) and L4 (Camoufox).
+
+          Patches monitor._render_with_playwright (a SYNC function returning
+          (html, final_url, method)). No source-file changes to monitor.py.
+          """
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+
+          try:
+              import monitor
+          except SystemExit as exc:
+              import subprocess
+              print(f"[STEALTH] monitor.py exits on import ({exc.code}); running directly", file=sys.stderr)
+              sys.exit(subprocess.call([sys.executable, "monitor.py"] + sys.argv[1:]))
+
+          if not hasattr(monitor, "_render_with_playwright"):
+              print("[STEALTH] WARNING: _render_with_playwright not found. Running vanilla monitor.py.", file=sys.stderr)
+              sys.exit(monitor.main() or 0)
+
+          _orig_render = monitor._render_with_playwright
+          print(f"[STEALTH] Found _render_with_playwright: {_orig_render.__name__}", file=sys.stderr)
+
+          _PARAM_ORDER = [
+              "timeout_ms", "wait_until", "wait_for_selector", "wait_after_ms",
+              "scroll_bottom", "selector_timeout_ms", "ignore_https_errors", "use_stealth",
+          ]
+
+          _BLOCK_SIGNALS = (
+              "checking your browser", "just a moment", "please wait",
+              "enable javascript", "javascript is required",
+              "access denied", "you have been blocked",
+              "cloudflare", "ddos protection", "rate limited",
+              "captcha", "challenge-platform", "bot detection",
+              "request blocked", "attention required",
+          )
+
+          def _looks_blocked(html):
+              if not html:
+                  return True
+              lower = html.lower()
+              return any(sig in lower for sig in _BLOCK_SIGNALS)
+
+          def _should_retry_stealth(html, method):
+              if not html or len(html) < 200:
+                  return True
+              m = (method or "").lower()
+              if "error" in m or "fail" in m:
+                  return True
+              if _looks_blocked(html):
+                  return True
+              return False
+
+          def _bump_counter():
+              try:
+                  with monitor._JS_RENDER_COUNT_LOCK:
+                      monitor._JS_RENDER_COUNT += 1
+              except Exception:
+                  pass
+
+          def _patchright_render(url, **kw):
+              try:
+                  from patchright.sync_api import sync_playwright
+              except ImportError:
+                  return None, url, "patchright_not_installed"
+              try:
+                  timeout_ms = int(kw.get("timeout_ms") or monitor.JS_RENDER_TIMEOUT_MS)
+              except (TypeError, ValueError):
+                  timeout_ms = monitor.JS_RENDER_TIMEOUT_MS
+              wait_after_ms = kw.get("wait_after_ms")
+              try:
+                  wait_after_ms = int(wait_after_ms if wait_after_ms is not None else monitor.JS_WAIT_AFTER_MS)
+              except (TypeError, ValueError):
+                  wait_after_ms = monitor.JS_WAIT_AFTER_MS
+              wait_for_selector = kw.get("wait_for_selector")
+              try:
+                  selector_timeout_ms = int(kw.get("selector_timeout_ms") or 10000)
+              except (TypeError, ValueError):
+                  selector_timeout_ms = 10000
+              scroll_bottom = bool(kw.get("scroll_bottom", False))
+              ignore_https_errors = bool(kw.get("ignore_https_errors", False))
+              try:
+                  with sync_playwright() as pw:
+                      browser = pw.chromium.launch(
+                          headless=False,
+                          args=["--no-sandbox", "--disable-dev-shm-usage",
+                                "--disable-gpu", "--disable-blink-features=AutomationControlled"],
+                      )
+                      try:
+                          ctx = browser.new_context(
+                              user_agent=monitor.JS_RENDER_USER_AGENT,
+                              locale="en-IN",
+                              viewport={"width": 1366, "height": 900},
+                              java_script_enabled=True,
+                              ignore_https_errors=ignore_https_errors,
+                              extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"},
+                          )
+                          page = ctx.new_page()
+                          try:
+                              page.add_init_script(
+                                  "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                                  "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});"
+                                  "Object.defineProperty(navigator, 'languages', {get: () => ['en-IN','en','hi']});"
+                                  "window.chrome = { runtime: {} };"
+                              )
+                          except Exception:
+                              pass
+                          page.set_default_timeout(timeout_ms)
+                          try:
+                              page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                          except Exception as exc:
+                              return None, url, f"patchright_nav_error:{type(exc).__name__}"
+                          try:
+                              page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms))
+                          except Exception:
+                              pass
+                          if wait_for_selector:
+                              try:
+                                  page.wait_for_selector(wait_for_selector, state="attached",
+                                                         timeout=min(selector_timeout_ms, timeout_ms))
+                              except Exception:
+                                  pass
+                          if wait_after_ms:
+                              try:
+                                  page.wait_for_timeout(wait_after_ms)
+                              except Exception:
+                                  pass
+                          if scroll_bottom:
+                              try:
+                                  prev = -1
+                                  for _ in range(4):
+                                      h = page.evaluate("() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)")
+                                      page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                                      page.wait_for_timeout(600)
+                                      if h == prev:
+                                          break
+                                      prev = h
+                              except Exception:
+                                  pass
+                          try:
+                              html = page.content()
+                              final_url = page.url or url
+                          except Exception as exc:
+                              return None, url, f"patchright_content_error:{type(exc).__name__}"
+                          if html:
+                              _bump_counter()
+                          return html, final_url, "patchright_ok"
+                      finally:
+                          try:
+                              browser.close()
+                          except Exception:
+                              pass
+              except Exception as exc:
+                  return None, url, f"patchright_error:{type(exc).__name__}"
+
+          def _camoufox_render(url, **kw):
+              try:
+                  from camoufox.sync_api import Camoufox
+              except ImportError:
+                  return None, url, "camoufox_not_installed"
+              try:
+                  timeout_ms = int(kw.get("timeout_ms") or monitor.JS_RENDER_TIMEOUT_MS)
+              except (TypeError, ValueError):
+                  timeout_ms = monitor.JS_RENDER_TIMEOUT_MS
+              wait_after_ms = kw.get("wait_after_ms")
+              try:
+                  wait_after_ms = int(wait_after_ms if wait_after_ms is not None else monitor.JS_WAIT_AFTER_MS)
+              except (TypeError, ValueError):
+                  wait_after_ms = monitor.JS_WAIT_AFTER_MS
+              ignore_https_errors = bool(kw.get("ignore_https_errors", False))
+              def _attempt(**camoufox_kwargs):
+                  with Camoufox(**camoufox_kwargs) as browser:
+                      page = browser.new_page()
+                      page.set_default_timeout(timeout_ms)
+                      try:
+                          page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                      except Exception as exc:
+                          return None, url, f"camoufox_nav_error:{type(exc).__name__}"
+                      try:
+                          page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms))
+                      except Exception:
+                          pass
+                      if wait_after_ms:
+                          try:
+                              page.wait_for_timeout(wait_after_ms)
+                          except Exception:
+                              pass
+                      try:
+                          html = page.content()
+                          final_url = page.url or url
+                      except Exception as exc:
+                          return None, url, f"camoufox_content_error:{type(exc).__name__}"
+                      if html:
+                          _bump_counter()
+                      return html, final_url, "camoufox_ok"
+              try:
+                  return _attempt(headless=True, ignore_https_errors=ignore_https_errors)
+              except TypeError:
+                  try:
+                      return _attempt(headless=True)
+                  except Exception as exc:
+                      return None, url, f"camoufox_error:{type(exc).__name__}"
+              except Exception as exc:
+                  return None, url, f"camoufox_error:{type(exc).__name__}"
+
+          def _patched_render(url, *args, **kwargs):
+              for i, val in enumerate(args):
+                  if i < len(_PARAM_ORDER):
+                      kwargs.setdefault(_PARAM_ORDER[i], val)
+              try:
+                  html, final_url, method = _orig_render(url, **kwargs)
+              except Exception as exc:
+                  html, final_url, method = None, url, f"orig_error:{type(exc).__name__}"
+              if not _should_retry_stealth(html, method):
+                  return html, final_url, method
+              print(f"[SCAN-L3.5] Trying Patchright: {url[:80]}", file=sys.stderr)
+              pr_html, pr_url, pr_method = _patchright_render(url, **kwargs)
+              if not _should_retry_stealth(pr_html, pr_method):
+                  print(f"[SCAN-L3.5] OK: {url[:80]}", file=sys.stderr)
+                  return pr_html, pr_url, pr_method
+              print(f"[SCAN-L3.5-FAIL] {pr_method}: {url[:80]}", file=sys.stderr)
+              print(f"[SCAN-L4] Trying Camoufox: {url[:80]}", file=sys.stderr)
+              cf_html, cf_url, cf_method = _camoufox_render(url, **kwargs)
+              if not _should_retry_stealth(cf_html, cf_method):
+                  print(f"[SCAN-L4] OK: {url[:80]}", file=sys.stderr)
+                  return cf_html, cf_url, cf_method
+              print(f"[SCAN-L4-FAIL] {cf_method}: {url[:80]}", file=sys.stderr)
+              if html:
+                  return html, final_url, method
+              if pr_html:
+                  return pr_html, pr_url, pr_method
+              if cf_html:
+                  return cf_html, cf_url, cf_method
+              return None, url, "all_stealth_layers_failed"
+
+          monitor._render_with_playwright = _patched_render
+          print("[STEALTH] Patched _render_with_playwright — L3.5 + L4 active", file=sys.stderr)
+
+          sys.exit(monitor.main() or 0)
+          PYEOF
+          echo "[STEALTH] /tmp/stealth_runner.py created"
+
+      # ══════════════════════════════════════════════════════════════════
+      # Run monitor via stealth wrapper under Xvfb
+      # ══════════════════════════════════════════════════════════════════
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
 
-          # ── Layer 4 & 5 fallbacks (optional — blank se skip ho jayega) ──
           CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
 
-          # ── JUT SSL bypass (websites.json mein verify_ssl:false hai; ye env isse honor karwati hai) ──
           ALLOW_INSECURE_TLS: 'true'
 
-          # ── Feature flags ──
           JS_RENDER_ENABLED: 'true'
           TESSERACT_ENABLED: 'true'
           TESSERACT_LANG: 'hin+eng'
 
-          # ── Time budget: 110 min work + 15 min send reserve ──
           MAX_RUN_SECONDS: '6600'
           SEND_RESERVE_SECONDS: '900'
-        run: python monitor.py
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+            python /tmp/stealth_runner.py
 
-      # Always try to persist the latest state, even if scanning or notification
-      # processing failed after state.json was changed. A failed push fails this job.
+      # ══════════════════════════════════════════════════════════════════
+      # State push (unchanged from original)
+      # ══════════════════════════════════════════════════════════════════
       - name: Commit and push state.json
         if: always()
         env:
@@ -223,12 +514,6 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "State push attempt ${attempt}/5"
             git fetch origin "$TARGET_BRANCH"
-
-            # ══════════════════════════════════════════════════════════════
-            # IMPORTANT: Discard runtime patches to monitor.py and websites.json
-            # before rebase. The patches are applied fresh every run, so
-            # discarding them here is safe and keeps the working tree clean.
-            # ══════════════════════════════════════════════════════════════
             git reset --hard HEAD
 
             if ! git rebase "origin/$TARGET_BRANCH"; then
