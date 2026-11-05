@@ -6,7 +6,6 @@ on:
 permissions:
   contents: write
 
-# Serialize all runs that read/write state.json. Do not cancel a run mid-send.
 concurrency:
   group: university-notice-monitor
   cancel-in-progress: false
@@ -14,7 +13,6 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    # ── Buffer: MAX_RUN_SECONDS=6600 (110m) + install + state save ──
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -30,9 +28,6 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      # ══════════════════════════════════════════════════════════════════
-      # Tesseract OCR + xvfb/xauth (xvfb-run requires xauth)
-      # ══════════════════════════════════════════════════════════════════
       - name: Install Tesseract OCR + Xvfb
         run: |
           sudo apt-get update
@@ -50,18 +45,11 @@ jobs:
       - name: Install Playwright Chromium (L3)
         run: python -m playwright install --with-deps chromium
 
-      # ══════════════════════════════════════════════════════════════════
-      # L3.5: Patchright — stealth-patched Playwright Chromium
-      # ══════════════════════════════════════════════════════════════════
       - name: Install Patchright Chromium (L3.5)
         run: |
           pip install "patchright<2,>=1.40"
           python -m patchright install --with-deps chromium
 
-      # ══════════════════════════════════════════════════════════════════
-      # L4: Camoufox — Firefox-based anti-detect browser
-      #   || true ensures a transient apt hiccup does not fail the job
-      # ══════════════════════════════════════════════════════════════════
       - name: Install Camoufox Firefox (L4)
         run: |
           sudo apt-get install -y --no-install-recommends \
@@ -71,9 +59,6 @@ jobs:
           pip install "camoufox<1"
           python -m camoufox fetch
 
-      # ══════════════════════════════════════════════════════════════════
-      # Preflight: verify both new browsers launch (fail fast if broken)
-      # ══════════════════════════════════════════════════════════════════
       - name: Verify new browser layers
         run: |
           xvfb-run --auto-servernum python - <<'PYEOF'
@@ -106,105 +91,77 @@ jobs:
       - name: Run self-tests
         run: python monitor.py --test
 
-      # ══════════════════════════════════════════════════════════════════
-      # Runtime patch: websites.json (batch=5, calls=20)
-      # ══════════════════════════════════════════════════════════════════
       - name: Patch websites.json (batch=5, calls=20)
         run: |
           python - <<'PYEOF'
           from pathlib import Path
           import json, sys
-
           path = Path("websites.json")
           if not path.exists():
               print("ERROR: websites.json not found", file=sys.stderr)
               sys.exit(1)
-
           data = json.loads(path.read_text(encoding="utf-8"))
           scan = data.setdefault("scan", {})
-
           old_batch = scan.get("gemini_batch_size", 3)
           old_calls = scan.get("gemini_max_calls_per_run", 15)
-
           if old_batch == 5 and old_calls == 20:
               print("[PATCH] websites.json already at 5/20. Skipping.")
               sys.exit(0)
-
           scan["gemini_batch_size"] = 5
           scan["gemini_max_calls_per_run"] = 20
-
-          path.write_text(
-              json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8"
-          )
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
           print(f"[PATCH] gemini_batch_size: {old_batch} -> 5")
           print(f"[PATCH] gemini_max_calls_per_run: {old_calls} -> 20")
           PYEOF
 
-      # ══════════════════════════════════════════════════════════════════
-      # Runtime patch: max_pending_attempts floor 500 → 8
-      # ══════════════════════════════════════════════════════════════════
       - name: Patch monitor.py (max_pending_attempts 500 -> 8)
         run: |
           python - <<'PYEOF'
           from pathlib import Path
           import sys, ast
-
           path = Path("monitor.py")
           if not path.exists():
               print("ERROR: monitor.py not found", file=sys.stderr)
               sys.exit(1)
-
           content = path.read_text(encoding="utf-8")
           old = 'scan["max_pending_attempts"] = max(500, int(scan["max_pending_attempts"]))'
           new = 'scan["max_pending_attempts"] = max(8, int(scan["max_pending_attempts"]))'
-
           if new in content:
               print("[PATCH] Already patched — max(8, ...) present. Skipping.")
               sys.exit(0)
-
           if old not in content:
               print("ERROR: Expected line not found in monitor.py:", file=sys.stderr)
               for i, line in enumerate(content.splitlines(), 1):
                   if "max_pending_attempts" in line:
                       print(f"  Line {i}: {line}", file=sys.stderr)
               sys.exit(1)
-
           patched = content.replace(old, new, 1)
           path.write_text(patched, encoding="utf-8")
           ast.parse(path.read_text(encoding="utf-8"))
           print("[PATCH] Successfully replaced 500 -> 8 in monitor.py")
           PYEOF
 
-      # ══════════════════════════════════════════════════════════════════
-      # Runtime patch: per-run hard cap 60 → 150
-      # ══════════════════════════════════════════════════════════════════
       - name: Patch monitor.py (per-run hard cap 60 -> 150)
         run: |
           python - <<'PYEOF'
           from pathlib import Path
           import sys, ast
-
           path = Path("monitor.py")
           if not path.exists():
               print("ERROR: monitor.py not found", file=sys.stderr)
               sys.exit(1)
-
           content = path.read_text(encoding="utf-8")
           old = 'max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 60)'
           new = 'max_items_this_run = min(scan["gemini_batch_size"] * scan["gemini_max_calls_per_run"], 150)'
-
           if new in content:
               print("[PATCH] Already patched — hard cap 150 present. Skipping.")
               sys.exit(0)
-
           if old not in content:
               print("ERROR: Expected line not found in monitor.py:", file=sys.stderr)
               for i, line in enumerate(content.splitlines(), 1):
                   if "max_items_this_run" in line:
                       print(f"  Line {i}: {line}", file=sys.stderr)
               sys.exit(1)
-
           patched = content.replace(old, new, 1)
           path.write_text(patched, encoding="utf-8")
           ast.parse(path.read_text(encoding="utf-8"))
@@ -212,17 +169,24 @@ jobs:
           PYEOF
 
       # ══════════════════════════════════════════════════════════════════
-      # Stealth wrapper — runtime monkey-patch for _render_with_playwright
-      #   L3 (vanilla) → L3.5 (Patchright) → L4 (Camoufox)
-      #   Only retries when vanilla fails or returns a block page
+      # UPDATED STEALTH WRAPPER — FIXED BLOCK DETECTION
       # ══════════════════════════════════════════════════════════════════
-      - name: Create stealth wrapper
+      - name: Create stealth wrapper (fixed block detector)
         run: |
           cat > /tmp/stealth_runner.py <<'PYEOF'
           """Runtime wrapper for monitor.py adding L3.5 (Patchright) and L4 (Camoufox).
 
           Patches monitor._render_with_playwright (a SYNC function returning
           (html, final_url, method)). No source-file changes to monitor.py.
+
+          FIX (2026-11-05): the previous version treated any page containing
+          common keywords ("please wait", "captcha", "cloudflare", etc.) as a
+          block page, even when the page had 1.6M chars of real content. This
+          caused every site to retry L3.5 + L4 pointlessly. The detector is now
+          restricted to:
+            - pages smaller than 50 KB
+            - specific <title> markers and Cloudflare/Imperva fingerprints
+            - a fast-path that accepts any "ok" method + >10 KB page
           """
           import os
           import sys
@@ -248,30 +212,66 @@ jobs:
               "scroll_bottom", "selector_timeout_ms", "ignore_https_errors", "use_stealth",
           ]
 
-          _BLOCK_SIGNALS = (
-              "checking your browser", "just a moment", "please wait",
-              "enable javascript", "javascript is required",
-              "access denied", "you have been blocked",
-              "cloudflare", "ddos protection", "rate limited",
-              "captcha", "challenge-platform", "bot detection",
-              "request blocked", "attention required",
+          # ─────────────────────────────────────────────────────────────
+          # FIXED BLOCK DETECTOR
+          # ─────────────────────────────────────────────────────────────
+
+          # Only these <title> prefixes matter. Real content pages
+          # rarely have these in their title.
+          _BLOCK_TITLE_SIGNALS = (
+              "<title>attention required",
+              "<title>just a moment",
+              "<title>access denied",
+              "<title>checking your browser",
+              "<title>please wait",
+              "<title>one more step",
+              "<title>security check",
+              "<title>ddos-guard",
+              "<title>ddos protection by",
+              "<title>bot verification",
           )
+
+          # Real block-page JS fingerprints (very specific, low false-positive).
+          _BLOCK_FINGERPRINTS = (
+              "cf-browser-verification",
+              "cf_chl_opt",
+              "challenge-platform/h/b",
+              "window._cf_chl_opt",
+              "_incapsula_resource",
+              "sucuri_cloudproxy_js",
+              "ddos-guard",
+          )
+
+          # Real block pages are small. Content pages are big.
+          _BLOCK_PAGE_MAX_BYTES = 50_000
 
           def _looks_blocked(html):
               if not html:
                   return True
+              # Large page = almost certainly real content
+              if len(html) > _BLOCK_PAGE_MAX_BYTES:
+                  return False
+              # Check only the opening region for <title> markers
+              head = html[:3000].lower()
+              if any(sig in head for sig in _BLOCK_TITLE_SIGNALS):
+                  return True
+              # Check whole (small) page for specific block fingerprints
               lower = html.lower()
-              return any(sig in lower for sig in _BLOCK_SIGNALS)
-
-          def _should_retry_stealth(html, method):
-              if not html or len(html) < 200:
-                  return True
-              m = (method or "").lower()
-              if "error" in m or "fail" in m:
-                  return True
-              if _looks_blocked(html):
+              if any(fp in lower for fp in _BLOCK_FINGERPRINTS):
                   return True
               return False
+
+          def _should_retry_stealth(html, method):
+              if not html or len(html) < 500:
+                  return True
+              m = (method or "").lower()
+              # Method itself reported an error → retry
+              if "error" in m or "fail" in m:
+                  return True
+              # Fast path: method succeeded AND page is substantial → NOT blocked
+              if "ok" in m and len(html) > 10_000:
+                  return False
+              return _looks_blocked(html)
 
           def _bump_counter():
               try:
@@ -456,39 +456,29 @@ jobs:
               return None, url, "all_stealth_layers_failed"
 
           monitor._render_with_playwright = _patched_render
-          print("[STEALTH] Patched _render_with_playwright — L3.5 + L4 active", file=sys.stderr)
+          print("[STEALTH] Patched _render_with_playwright — L3.5 + L4 active (FIXED block detector)", file=sys.stderr)
 
           sys.exit(monitor.main() or 0)
           PYEOF
           echo "[STEALTH] /tmp/stealth_runner.py created"
 
-      # ══════════════════════════════════════════════════════════════════
-      # Run monitor via stealth wrapper under Xvfb
-      # ══════════════════════════════════════════════════════════════════
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-
           CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
-
           ALLOW_INSECURE_TLS: 'true'
-
           JS_RENDER_ENABLED: 'true'
           TESSERACT_ENABLED: 'true'
           TESSERACT_LANG: 'hin+eng'
-
           MAX_RUN_SECONDS: '6600'
           SEND_RESERVE_SECONDS: '900'
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
             python /tmp/stealth_runner.py
 
-      # ══════════════════════════════════════════════════════════════════
-      # State push (unchanged from original)
-      # ══════════════════════════════════════════════════════════════════
       - name: Commit and push state.json
         if: always()
         env:
@@ -499,23 +489,19 @@ jobs:
             echo "Refusing to push state from a non-branch ref: $GITHUB_REF" >&2
             exit 1
           fi
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
           git add -- state.json
           if ! git diff --cached --quiet; then
             git commit -m 'Update university monitor state [skip ci]'
           else
             echo 'state.json has no staged changes.'
           fi
-
           pushed=false
           for attempt in 1 2 3 4 5; do
             echo "State push attempt ${attempt}/5"
             git fetch origin "$TARGET_BRANCH"
             git reset --hard HEAD
-
             if ! git rebase "origin/$TARGET_BRANCH"; then
               git rebase --abort || true
               if [[ "$attempt" -eq 5 ]]; then
@@ -525,14 +511,12 @@ jobs:
               sleep 5
               continue
             fi
-
             if git push origin "HEAD:refs/heads/$TARGET_BRANCH"; then
               pushed=true
               break
             fi
             if [[ "$attempt" -lt 5 ]]; then sleep 5; fi
           done
-
           if [[ "$pushed" != true ]]; then
             echo 'ERROR: state.json was not persisted to the repository.' >&2
             exit 1
