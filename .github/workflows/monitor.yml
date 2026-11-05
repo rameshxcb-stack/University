@@ -169,7 +169,38 @@ jobs:
           PYEOF
 
       # ══════════════════════════════════════════════════════════════════
-      # UPDATED STEALTH WRAPPER — FIXED BLOCK DETECTION
+      # NEW SAFETY PATCH: increase starvation rescue from 5 to 20
+      # Purpose: never-attempted items get more queue priority.
+      # ══════════════════════════════════════════════════════════════════
+      - name: Patch monitor.py (starvation rescue 5 -> 20)
+        run: |
+          python - <<'PYEOF'
+          from pathlib import Path
+          import sys, ast
+          path = Path("monitor.py")
+          if not path.exists():
+              print("ERROR: monitor.py not found", file=sys.stderr)
+              sys.exit(1)
+          content = path.read_text(encoding="utf-8")
+          old = '_starved_reserved = _starved[:5]'
+          new = '_starved_reserved = _starved[:20]'
+          if new in content:
+              print("[PATCH] Already patched — starved rescue 20 present. Skipping.")
+              sys.exit(0)
+          if old not in content:
+              print("ERROR: Expected starvation line not found in monitor.py:", file=sys.stderr)
+              for i, line in enumerate(content.splitlines(), 1):
+                  if "_starved_reserved" in line:
+                      print(f"  Line {i}: {line}", file=sys.stderr)
+              sys.exit(1)
+          patched = content.replace(old, new, 1)
+          path.write_text(patched, encoding="utf-8")
+          ast.parse(path.read_text(encoding="utf-8"))
+          print("[PATCH] Successfully replaced starved rescue 5 -> 20 in monitor.py")
+          PYEOF
+
+      # ══════════════════════════════════════════════════════════════════
+      # STEALTH WRAPPER — FIXED BLOCK DETECTOR
       # ══════════════════════════════════════════════════════════════════
       - name: Create stealth wrapper (fixed block detector)
         run: |
@@ -179,14 +210,13 @@ jobs:
           Patches monitor._render_with_playwright (a SYNC function returning
           (html, final_url, method)). No source-file changes to monitor.py.
 
-          FIX (2026-11-05): the previous version treated any page containing
-          common keywords ("please wait", "captcha", "cloudflare", etc.) as a
-          block page, even when the page had 1.6M chars of real content. This
-          caused every site to retry L3.5 + L4 pointlessly. The detector is now
-          restricted to:
-            - pages smaller than 50 KB
-            - specific <title> markers and Cloudflare/Imperva fingerprints
-            - a fast-path that accepts any "ok" method + >10 KB page
+          FIX (2026-11-05): Previous version treated any page containing keywords
+          like "please wait", "captcha", "cloudflare" as blocked — even 1.6M-char
+          real content pages. This caused every site to launch L3.5 + L4 pointlessly
+          (runtime 49 -> 96 min). New detector:
+            - fast-path: method is "ok" AND page > 10KB -> NOT blocked
+            - only inspect <title> tags + specific CF/Imperva fingerprints
+            - only for pages < 50KB
           """
           import os
           import sys
@@ -215,9 +245,6 @@ jobs:
           # ─────────────────────────────────────────────────────────────
           # FIXED BLOCK DETECTOR
           # ─────────────────────────────────────────────────────────────
-
-          # Only these <title> prefixes matter. Real content pages
-          # rarely have these in their title.
           _BLOCK_TITLE_SIGNALS = (
               "<title>attention required",
               "<title>just a moment",
@@ -230,8 +257,6 @@ jobs:
               "<title>ddos protection by",
               "<title>bot verification",
           )
-
-          # Real block-page JS fingerprints (very specific, low false-positive).
           _BLOCK_FINGERPRINTS = (
               "cf-browser-verification",
               "cf_chl_opt",
@@ -241,21 +266,16 @@ jobs:
               "sucuri_cloudproxy_js",
               "ddos-guard",
           )
-
-          # Real block pages are small. Content pages are big.
           _BLOCK_PAGE_MAX_BYTES = 50_000
 
           def _looks_blocked(html):
               if not html:
                   return True
-              # Large page = almost certainly real content
               if len(html) > _BLOCK_PAGE_MAX_BYTES:
                   return False
-              # Check only the opening region for <title> markers
               head = html[:3000].lower()
               if any(sig in head for sig in _BLOCK_TITLE_SIGNALS):
                   return True
-              # Check whole (small) page for specific block fingerprints
               lower = html.lower()
               if any(fp in lower for fp in _BLOCK_FINGERPRINTS):
                   return True
@@ -265,10 +285,8 @@ jobs:
               if not html or len(html) < 500:
                   return True
               m = (method or "").lower()
-              # Method itself reported an error → retry
               if "error" in m or "fail" in m:
                   return True
-              # Fast path: method succeeded AND page is substantial → NOT blocked
               if "ok" in m and len(html) > 10_000:
                   return False
               return _looks_blocked(html)
@@ -478,6 +496,196 @@ jobs:
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
             python /tmp/stealth_runner.py
+
+      # ══════════════════════════════════════════════════════════════════
+      # SAFETY-NET LAYER — the "no miss" guarantee.
+      #
+      # Runs AFTER monitor.py, BEFORE state push.
+      #
+      # 1) For each item that is stuck (5+ attempts, still pending / permanent_error)
+      #    and hasn't been delivered yet, send a RAW Telegram alert with
+      #    title + URL + reason. This means user at least KNOWS about it.
+      # 2) Mark the item as "sent" so it doesn't loop forever.
+      # 3) Send health alert if a site has been failing for a long time (RIMS etc.)
+      # ══════════════════════════════════════════════════════════════════
+      - name: Safety-net delivery (raw alerts for stuck items)
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, sys, requests
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          state_path = Path("state.json")
+          if not state_path.exists():
+              print("[SAFETY-NET] No state.json — skipping")
+              sys.exit(0)
+
+          state = json.loads(state_path.read_text(encoding="utf-8"))
+          items = state.get("items", {}) or {}
+          sites = state.get("sites", {}) or {}
+
+          token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+          if not token or not chat_id:
+              print("[SAFETY-NET] No Telegram credentials — skipping", file=sys.stderr)
+              sys.exit(0)
+
+          def _send(text):
+              try:
+                  r = requests.post(
+                      f"https://api.telegram.org/bot{token}/sendMessage",
+                      json={"chat_id": chat_id, "text": text,
+                            "parse_mode": "HTML", "disable_web_page_preview": True},
+                      timeout=30,
+                  )
+                  return r.ok, r.status_code, (r.text[:200] if not r.ok else "")
+              except Exception as e:
+                  return False, 0, str(e)
+
+          now = datetime.now(timezone.utc).isoformat()
+          modified = False
+          sent_count = 0
+          per_run_cap = 10  # max raw alerts per run to avoid spam
+
+          # ── PART 1: Rescue stuck items ──
+          for iid, rec in list(items.items()):
+              if sent_count >= per_run_cap:
+                  break
+              if not isinstance(rec, dict):
+                  continue
+
+              status = rec.get("status")
+              attempts = int(rec.get("attempts", 0) or 0)
+              tel_attempts = int(rec.get("telegram_attempts", 0) or 0)
+
+              # Only rescue if: not yet delivered + (permanent_error OR 5+ failed attempts)
+              at_risk = (
+                  tel_attempts == 0 and
+                  (
+                      status == "permanent_error" or
+                      (status == "pending" and attempts >= 5)
+                  )
+              )
+              if not at_risk:
+                  continue
+
+              title = (rec.get("title") or "Untitled")[:180]
+              url = rec.get("url") or ""
+              site_name = rec.get("site_name") or rec.get("site_id") or "Unknown site"
+              err = (rec.get("last_error") or "unknown error")[:200]
+
+              text = (
+                  f"⚠️ <b>Safety-Net Alert</b>\n\n"
+                  f"<b>{site_name}</b>\n"
+                  f"{title}\n\n"
+                  f"<i>Reason: {err}</i>\n"
+                  f"<i>Attempts: {attempts} | Status: {status}</i>\n\n"
+                  f'🔗 <a href="{url}">Open original link</a>\n\n'
+                  f"<i>Auto-processing failed. Please check manually.</i>"
+              )
+
+              ok, code, detail = _send(text)
+              if ok:
+                  rec["telegram_attempts"] = tel_attempts + 1
+                  rec["status"] = "sent"
+                  rec["sent_at"] = now
+                  rec["last_error"] = f"Safety-net raw delivery: {err}"
+                  rec["safety_net_at"] = now
+                  sent_count += 1
+                  modified = True
+                  print(f"[SAFETY-NET] Sent raw alert: {title[:60]}")
+              else:
+                  print(f"[SAFETY-NET] Failed (HTTP {code}): {detail}", file=sys.stderr)
+
+          # ── PART 2: Persistent site failure alert ──
+          persistent_fails = []
+          for sid, srec in sites.items():
+              if not isinstance(srec, dict):
+                  continue
+              consec = int(srec.get("consecutive_failures", 0) or 0)
+              if consec >= 10:
+                  persistent_fails.append((sid, consec, (srec.get("last_error") or "")[:120]))
+
+          if persistent_fails:
+              last_alert = state.get("safety_net_last_site_alert_at")
+              should_alert = True
+              if last_alert:
+                  try:
+                      from datetime import datetime as _dt
+                      last_dt = _dt.fromisoformat(last_alert.replace("Z", "+00:00"))
+                      if last_dt.tzinfo is None:
+                          last_dt = last_dt.replace(tzinfo=timezone.utc)
+                      age_h = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                      if age_h < 24:
+                          should_alert = False
+                  except Exception:
+                      pass
+
+              if should_alert:
+                  lines = ["🚨 <b>Persistent Site Failure Alert</b>", "",
+                           "These sites have been failing 10+ consecutive runs:",
+                           ""]
+                  for sid, consec, err in persistent_fails[:10]:
+                      lines.append(f"• <b>{sid}</b> — {consec} consecutive fails")
+                      if err:
+                          lines.append(f"  <i>{err}</i>")
+                  lines.append("")
+                  lines.append("<i>New notices on these sites are NOT being detected. "
+                               "Manual check or config fix required.</i>")
+                  ok, code, detail = _send("\n".join(lines))
+                  if ok:
+                      state["safety_net_last_site_alert_at"] = now
+                      modified = True
+                      print(f"[SAFETY-NET] Sent persistent failure alert for {len(persistent_fails)} sites")
+                  else:
+                      print(f"[SAFETY-NET] Site alert failed: HTTP {code} {detail}", file=sys.stderr)
+
+          # ── PART 3: Queue backlog alert ──
+          total_pending = sum(1 for r in items.values()
+                              if isinstance(r, dict) and r.get("status") == "pending")
+          if total_pending >= 200:
+              last_alert = state.get("safety_net_last_backlog_alert_at")
+              should_alert = True
+              if last_alert:
+                  try:
+                      from datetime import datetime as _dt
+                      last_dt = _dt.fromisoformat(last_alert.replace("Z", "+00:00"))
+                      if last_dt.tzinfo is None:
+                          last_dt = last_dt.replace(tzinfo=timezone.utc)
+                      age_h = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                      if age_h < 24:
+                          should_alert = False
+                  except Exception:
+                      pass
+
+              if should_alert:
+                  text = (
+                      f"⚠️ <b>Queue Backlog Alert</b>\n\n"
+                      f"{total_pending} items are stuck in pending queue.\n\n"
+                      f"<i>This means many notices haven't been processed. "
+                      f"Check logs for TIME_LIMIT or repeated failures.</i>"
+                  )
+                  ok, code, detail = _send(text)
+                  if ok:
+                      state["safety_net_last_backlog_alert_at"] = now
+                      modified = True
+                      print(f"[SAFETY-NET] Sent backlog alert ({total_pending} pending)")
+                  else:
+                      print(f"[SAFETY-NET] Backlog alert failed: HTTP {code} {detail}", file=sys.stderr)
+
+          if modified:
+              state_path.write_text(
+                  json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8"
+              )
+              print(f"[SAFETY-NET] state.json updated (sent {sent_count} raw alerts)")
+          else:
+              print("[SAFETY-NET] No changes needed")
+          PYEOF
 
       - name: Commit and push state.json
         if: always()
