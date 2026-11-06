@@ -168,10 +168,6 @@ jobs:
           print("[PATCH] Successfully replaced 60 -> 150 in monitor.py")
           PYEOF
 
-      # ══════════════════════════════════════════════════════════════════
-      # NEW SAFETY PATCH: increase starvation rescue from 5 to 20
-      # Purpose: never-attempted items get more queue priority.
-      # ══════════════════════════════════════════════════════════════════
       - name: Patch monitor.py (starvation rescue 5 -> 20)
         run: |
           python - <<'PYEOF'
@@ -199,9 +195,6 @@ jobs:
           print("[PATCH] Successfully replaced starved rescue 5 -> 20 in monitor.py")
           PYEOF
 
-      # ══════════════════════════════════════════════════════════════════
-      # STEALTH WRAPPER — FIXED BLOCK DETECTOR
-      # ══════════════════════════════════════════════════════════════════
       - name: Create stealth wrapper (fixed block detector)
         run: |
           cat > /tmp/stealth_runner.py <<'PYEOF'
@@ -242,9 +235,6 @@ jobs:
               "scroll_bottom", "selector_timeout_ms", "ignore_https_errors", "use_stealth",
           ]
 
-          # ─────────────────────────────────────────────────────────────
-          # FIXED BLOCK DETECTOR
-          # ─────────────────────────────────────────────────────────────
           _BLOCK_TITLE_SIGNALS = (
               "<title>attention required",
               "<title>just a moment",
@@ -498,15 +488,103 @@ jobs:
             python /tmp/stealth_runner.py
 
       # ══════════════════════════════════════════════════════════════════
+      # POST-RUN CLEANUP — fixes 2 known bugs in state.json.
+      #
+      # BUG 1: Site-chrome images (examination.png, university.png,
+      #        student.png, media-coverage.png, etc.) were being treated
+      #        as notices. They consume 3 OCR retries each, then sit in
+      #        pending forever. Dead-letter them.
+      #
+      # BUG 2: Stale never-attempted items (attempts=0, >14 days old,
+      #        with a 2010-2023 year in title/URL) never get a processing
+      #        slot because fresh items always take priority. Abandon them
+      #        so they stop blocking the queue.
+      #
+      # Idempotent — safe to run every time. Does NOT touch monitor.py.
+      # ══════════════════════════════════════════════════════════════════
+      - name: Post-run cleanup (fix 2 bugs)
+        if: always()
+        run: |
+          python - <<'PYEOF'
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import json, sys, re
+
+          path = Path("state.json")
+          if not path.exists():
+              print("[CLEANUP] No state.json — skipping")
+              sys.exit(0)
+
+          try:
+              state = json.loads(path.read_text(encoding="utf-8"))
+          except Exception as exc:
+              print(f"[CLEANUP] state.json unreadable ({exc}); skipping", file=sys.stderr)
+              sys.exit(0)
+
+          items = state.get("items", {}) or {}
+          now = datetime.now(timezone.utc)
+
+          # ── BUG 1 FIX: site-chrome images treated as notices ──
+          CHROME_BARE = {
+              "logo", "icon", "banner", "favicon", "header", "footer",
+              "examination", "examinations", "university", "student", "students",
+              "notices", "alumni", "fac2", "media-coverage", "gallery",
+              "epointer", "controller", "studentreg", "admission", "syllabus",
+          }
+          IMG_EXTS = (".png", ".svg", ".ico", ".gif", ".webp", ".jpg", ".jpeg")
+          bug1_count = 0
+          for iid, item in items.items():
+              if not isinstance(item, dict):
+                  continue
+              if item.get("status") not in ("pending", "permanent_error"):
+                  continue
+              url = (item.get("url") or "").lower().split("?")[0]
+              if not url.endswith(IMG_EXTS):
+                  continue
+              fname = url.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+              if fname in CHROME_BARE:
+                  item["status"] = "dead_letter"
+                  item["last_error"] = f"site_chrome_image:{fname}"
+                  bug1_count += 1
+          print(f"[CLEANUP-BUG1] Dead-lettered {bug1_count} site-chrome image(s)")
+
+          # ── BUG 2 FIX: stale never-attempted items blocking queue ──
+          OLD_YEAR_RE = re.compile(r"\b(20(1\d|2[0-3]))\b")  # 2010–2023
+          bug2_count = 0
+          for iid, item in items.items():
+              if not isinstance(item, dict):
+                  continue
+              if item.get("status") != "pending":
+                  continue
+              if int(item.get("attempts", 0) or 0) != 0:
+                  continue
+              fs = item.get("first_seen")
+              if not fs:
+                  continue
+              try:
+                  age_days = (now - datetime.fromisoformat(fs.replace("Z", "+00:00"))).days
+              except Exception:
+                  continue
+              if age_days <= 14:
+                  continue
+              blob = f"{item.get('title', '')} {item.get('url', '')}"
+              if OLD_YEAR_RE.search(blob):
+                  item["status"] = "abandoned"
+                  item["last_error"] = f"stale_and_never_attempted:{age_days}d"
+                  bug2_count += 1
+          print(f"[CLEANUP-BUG2] Abandoned {bug2_count} stale never-attempted item(s)")
+
+          path.write_text(
+              json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          pending = sum(1 for r in items.values()
+                        if isinstance(r, dict) and r.get("status") == "pending")
+          print(f"[CLEANUP] Done. pending_now={pending}")
+          PYEOF
+
+      # ══════════════════════════════════════════════════════════════════
       # SAFETY-NET LAYER — the "no miss" guarantee.
-      #
-      # Runs AFTER monitor.py, BEFORE state push.
-      #
-      # 1) For each item that is stuck (5+ attempts, still pending / permanent_error)
-      #    and hasn't been delivered yet, send a RAW Telegram alert with
-      #    title + URL + reason. This means user at least KNOWS about it.
-      # 2) Mark the item as "sent" so it doesn't loop forever.
-      # 3) Send health alert if a site has been failing for a long time (RIMS etc.)
       # ══════════════════════════════════════════════════════════════════
       - name: Safety-net delivery (raw alerts for stuck items)
         if: always()
@@ -549,9 +627,8 @@ jobs:
           now = datetime.now(timezone.utc).isoformat()
           modified = False
           sent_count = 0
-          per_run_cap = 10  # max raw alerts per run to avoid spam
+          per_run_cap = 10
 
-          # ── PART 1: Rescue stuck items ──
           for iid, rec in list(items.items()):
               if sent_count >= per_run_cap:
                   break
@@ -562,7 +639,6 @@ jobs:
               attempts = int(rec.get("attempts", 0) or 0)
               tel_attempts = int(rec.get("telegram_attempts", 0) or 0)
 
-              # Only rescue if: not yet delivered + (permanent_error OR 5+ failed attempts)
               at_risk = (
                   tel_attempts == 0 and
                   (
@@ -601,7 +677,6 @@ jobs:
               else:
                   print(f"[SAFETY-NET] Failed (HTTP {code}): {detail}", file=sys.stderr)
 
-          # ── PART 2: Persistent site failure alert ──
           persistent_fails = []
           for sid, srec in sites.items():
               if not isinstance(srec, dict):
@@ -644,7 +719,6 @@ jobs:
                   else:
                       print(f"[SAFETY-NET] Site alert failed: HTTP {code} {detail}", file=sys.stderr)
 
-          # ── PART 3: Queue backlog alert ──
           total_pending = sum(1 for r in items.values()
                               if isinstance(r, dict) and r.get("status") == "pending")
           if total_pending >= 200:
