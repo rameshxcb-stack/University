@@ -3684,7 +3684,7 @@ def discover_site(session, site, scan):
                         scroll_bottom=site.get("js_scroll_bottom", JS_SCROLL_TO_BOTTOM),
                         selector_timeout_ms=site.get("js_selector_timeout_ms"),
                         ignore_https_errors=not site.get("verify_ssl", True),
-                        use_stealth=True
+                        use_stealth=True, proxy=None
                     )
                     js_render_count += 1
                     if rendered_html:
@@ -4413,7 +4413,7 @@ def validate_telegram_token(token):
 def send_telegram(token, chat_id, text):
     for attempt in range(3):
         try:
-            response = telegram_request("sendMessage", token, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=30)
+            response = telegram_request("sendMessage", token, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False})
             if response.ok: return (True, False, "sent")
             try:
                 data = response.json()
@@ -4430,8 +4430,6 @@ def send_telegram(token, chat_id, text):
                 time.sleep(min(10, 2 ** attempt))
                 continue
             return (False, False, f"Telegram HTTP {response.status_code}: {description}")
-        except requests.exceptions.ReadTimeout as exc:
-            return (True, False, f"Telegram ReadTimeout (assumed delivered): {exc}")
         except requests.RequestException as exc:
             if attempt < 2:
                 time.sleep(min(10, 2 ** attempt))
@@ -4445,7 +4443,7 @@ def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
         try:
             files = {"document": (filename, pdf_bytes, "application/pdf")}
             data = {"chat_id": chat_id, "caption": caption[:TELEGRAM_CAPTION_LIMIT], "parse_mode": "HTML"}
-            response = requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data=data, files=files, timeout=90)
+            response = requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data=data, files=files, timeout=60)
             if response.ok: return (True, False, "sent")
             try:
                 rdata = response.json()
@@ -4462,8 +4460,6 @@ def send_telegram_document(token, chat_id, pdf_bytes, filename, caption=""):
                 time.sleep(min(10, 2 ** attempt))
                 continue
             return (False, False, f"Telegram HTTP {response.status_code}: {description}")
-        except requests.exceptions.ReadTimeout as exc:
-            return (True, False, f"Telegram ReadTimeout (assumed delivered): {exc}")
         except requests.RequestException as exc:
             if attempt < 2:
                 time.sleep(min(10, 2 ** attempt))
@@ -5078,7 +5074,7 @@ def _fetch_images_for_batch(batch, scan, send_deadline=None):
             print(f"[WARN] Image OCR skipped safely: {exc}", file=sys.stderr)
 
 
-def _fetch_pdfs_for_batch(batch, scan, send_deadline=None, state=None):
+def _fetch_pdfs_for_batch(batch, scan, send_deadline=None):
     targets = [(iid, record) for iid, record in batch if _should_fetch_pdf(record)]
     if not targets: return
     default_timeout = scan["request_timeout_seconds"]
@@ -5147,8 +5143,7 @@ def _fetch_pdfs_for_batch(batch, scan, send_deadline=None, state=None):
                     record["classification"] = None
                     record["summary"] = ""
                     record["last_error"] = "Date review required: readable PDF has old batch/session year but no credible issue date"
-                    if state is not None:
-                        add_review_item(state, record, "undated_old_batch_requires_review")
+                    add_review_item(state, record, "undated_old_batch_requires_review")
                     print(
                         f"[DATE-REVIEW-HOLD] Not auto-sent: old batch/session and no credible PDF issue date: "
                         f"{str(effective_title)[:90]}",
@@ -5828,7 +5823,7 @@ def main():
             active_batch.append((iid, record))
         batch = active_batch
         if not batch: continue
-        try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline, state=state)
+        try: _fetch_pdfs_for_batch(batch, scan, send_deadline=send_deadline)
         except Exception as exc: print(f"[WARN] PDF batch fetch failed: {exc}", file=sys.stderr)
         try: _fetch_images_for_batch(batch, scan, send_deadline=send_deadline)
         except Exception as exc: print(f"[WARN] Image OCR batch failed safely: {exc}", file=sys.stderr)
