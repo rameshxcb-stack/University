@@ -89851,7 +89851,7 @@
       "is_image": false,
       "first_seen": "2026-10-30T17:17:31.131906+00:00",
       "last_seen": "2026-11-07T22:44:27.980714+00:00",
-      "status": "pending",
+      "status": "abandoned",
       "attempts": 0,
       "summary": "",
       "classification": {
@@ -89867,7 +89867,7 @@
       "telegram_attempts": 0,
       "pdf_sent": false,
       "upload_date": "2026-11-05T00:00:00+00:00",
-      "last_error": "Attachment verification incomplete: attachment_not_readable_or_ocr_failed",
+      "last_error": "stale_and_never_attempted:15d",
       "etag": null,
       "last_modified": null,
       "pdf_hash": null,
