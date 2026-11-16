@@ -104172,7 +104172,7 @@
       "is_image": false,
       "first_seen": "2026-11-01T20:31:28.193435+00:00",
       "last_seen": "2026-11-07T22:44:25.034961+00:00",
-      "status": "pending",
+      "status": "abandoned",
       "attempts": 0,
       "summary": "",
       "classification": null,
@@ -104184,7 +104184,7 @@
       "telegram_attempts": 0,
       "pdf_sent": false,
       "upload_date": null,
-      "last_error": null,
+      "last_error": "stale_and_never_attempted:15d",
       "etag": null,
       "last_modified": null,
       "pdf_hash": null,
@@ -104262,7 +104262,7 @@
       "is_image": false,
       "first_seen": "2026-11-01T20:31:28.276261+00:00",
       "last_seen": "2026-11-07T22:44:25.114782+00:00",
-      "status": "pending",
+      "status": "abandoned",
       "attempts": 0,
       "summary": "",
       "classification": null,
@@ -104274,7 +104274,7 @@
       "telegram_attempts": 0,
       "pdf_sent": false,
       "upload_date": null,
-      "last_error": null,
+      "last_error": "stale_and_never_attempted:15d",
       "etag": null,
       "last_modified": null,
       "pdf_hash": null,
@@ -133925,6 +133925,6 @@
       "i": "196aca97832c2de8ed569916706d17df"
     }
   },
-  "safety_net_last_site_alert_at": "2026-11-15T21:02:19.756393+00:00",
-  "safety_net_last_backlog_alert_at": "2026-11-15T21:02:19.756393+00:00"
+  "safety_net_last_site_alert_at": "2026-11-16T21:02:49.304961+00:00",
+  "safety_net_last_backlog_alert_at": "2026-11-16T21:02:49.304961+00:00"
 }
